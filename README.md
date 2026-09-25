@@ -25,9 +25,8 @@ I'm too lazy to write a full thing but here's a short list:
 Download the `-setup.exe` installer from the repository's Releases page and
 run.
 
-To get updates, enter the repository as `masterrite/SnapRSS` under
-**Settings → Updates**. SnapRSS then checks three minutes after starting and
-once a day, and shows a bar when a new version is ready.
+SnapRSS checks for updates three minutes after starting and
+once a day. It shows a bar when a new version is ready.
 
 ## Moving from QuiteRSS
 
