@@ -1,37 +1,31 @@
+<p align="center">
+<img width="1440" height="930" alt="Snipaste_2026-09-24_20-21-55" src="https://github.com/user-attachments/assets/90c18bcf-f998-4ddb-8474-47a0ed1132ab"/>
+</p>
+
 # SnapRSS
-An RSS feed reader inspired by QuiteRSS in Rust. For my own use. Written by Claude using Opus 5.5. Icon and name are by me.
+An RSS feed reader inspired by QuiteRSS in Rust and uses Tauri frontend. For my own use. Written by Claude using Opus 5.5. Icon and name are by me.
 
-## What it does
+I've been using QuiteRSS for years. But it has fell out of maintenance and the interface has become outdated and clunky. Apparently it's quite a spaghetti code, too, making migration from Qt 5 to modern Qt 6 hard, according to discussions in its Issues page. Thanks to the advent of agentic AI, I now have the tools to realize my ideas without a developer or pay my friend way more than I could afford to build something he definitely won't have time to maintain. So here it is, QuiteRSS rewritten from scratch in Rust.
 
-- **Reading.** Three-pane Classic layout or a one-column Newspaper layout,
-  relaxed or compact rows, and eight themes. Articles show the full page text,
-  extracted in the background and cleaned of scripts and clutter; anything
-  that needs a real browser opens in yours.
-- **Organising.** Folders nested to any depth, arranged by drag and drop.
-  Unread, All, Starred and Deleted views. Colored labels.
-- **Filters.** Rules that act on new articles as they arrive: mark read,
-  star, label, delete, play a sound or notify.
-- **Housekeeping.** Retention rules, global or per feed, that move old
-  articles to Deleted, where they can still be restored. Unread, starred and
-  labelled articles can be protected from them. Backups from the app menu;
-  compacting and clearing the article cache on the Storage page.
-- **Updating.** Each feed polls on its own interval and asks the server
-  whether anything changed before downloading, so an unchanged feed costs
-  almost nothing. A failing feed backs off and is marked in the tree.
-- **Your way.** Four toolbars you can rearrange, resizable panes, keyboard
-  shortcuts, undo, the system tray, start with Windows, and updates that
-  install themselves.
+## Features
+
+It's an RSS feed reader... What else do you want? Check out the settings to find out what else this thing can do.
+
+Short list:
+- themes
+- customizable toolbars
+- labels, rules, and filters
+- keyboard shortcuts
+- automatic updater
 
 ## Installing
 
 Download the `-setup.exe` installer from the repository's Releases page and
-run it. SnapRSS needs WebView2, which comes with Windows 11 and current
-Windows 10.
+run.
 
-To get updates, enter the repository as `owner/name` under
+To get updates, enter the repository as `masterrite/SnapRSS` under
 **Settings → Updates**. SnapRSS then checks three minutes after starting and
-once a day, and shows a bar when a new version is ready. Updates are signed,
-and SnapRSS refuses any download whose signature doesn't match.
+once a day, and shows a bar when a new version is ready.
 
 ## Moving from QuiteRSS
 
@@ -43,13 +37,9 @@ Click **Import** and choose either file:
 - **An OPML file** (QuiteRSS: Feeds → Export Feeds) brings subscriptions and
   folders only.
 
-The file type is detected from its contents, not its name. Importing only
-adds: feeds you already have are skipped, so importing the same file twice
-changes nothing.
-
 **Export** writes OPML 2.0 with your subscriptions and folders.
 
-## Keyboard
+## Keyboard shortcuts
 
 | Key | Action |
 |---|---|
@@ -67,7 +57,7 @@ changes nothing.
 | `F5` | Update all feeds |
 | `Ctrl+,` | Settings |
 
-## Where your data lives
+## Database path
 
     %APPDATA%\com.snaprss.app\snaprss.db
 
@@ -76,9 +66,7 @@ preferences and are kept by the window itself, not in the database.
 
 ## Building from source
 
-You need Rust, the MSVC build tools and WebView2 on Windows. The Linux and
-macOS dependencies are listed in `crates/app/README.md`; the app is built
-there for development only.
+You need Rust, the MSVC build tools and WebView2 on Windows.
 
     cargo install tauri-cli --version "^2.0.0" --locked
     cd crates/app
@@ -91,15 +79,6 @@ there for development only.
     crates/fetch/     downloading feeds, scheduling, saving new articles
     crates/article/   extracting and cleaning article text
     crates/app/       the window: Tauri shell, ui/ frontend, ui-test/ checks
-
-The first three have no window and build and test anywhere. `crates/app/README.md`
-covers the app in depth: commands, background updating, the sidebar, toolbars,
-settings, the tray, icons and security.
-
-## About QuiteRSS
-
-SnapRSS reads QuiteRSS's database format to import from it. It contains no
-QuiteRSS code, and its own database schema is its own.
 
 ## License
 
