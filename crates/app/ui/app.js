@@ -675,12 +675,15 @@ function renderList() {
       if (a?.link) openUrl(a.link);
     };
   });
+  const collapseCard = () => {
+    state.selected = null;
+    state.current = null;
+    renderList();
+  };
   el.querySelectorAll("[data-collapse]").forEach((b) => {
     b.onclick = (e) => {
       e.stopPropagation();
-      state.selected = null;
-      state.current = null;
-      renderList();
+      collapseCard();
     };
   });
 
@@ -713,6 +716,14 @@ function renderList() {
         const next = new Set(state.sel);
         next.has(id) ? next.delete(id) : next.add(id);
         setSelection(next, { anchor: id });
+        return;
+      }
+
+      // A plain click on the open card's headline closes it again. Not the
+      // second click of a double-click: that one opens the article in the
+      // browser, and closing the card underneath it would be a surprise.
+      if (paper && state.selected === id && e.detail <= 1) {
+        collapseCard();
         return;
       }
 

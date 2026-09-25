@@ -1131,6 +1131,23 @@ console.log("\nnewspaper layout");
   await tick(60);
   ok(!doc.querySelector(".full .prose"), "collapse closes it");
 
+  // Clicking the headline of the open card closes it too.
+  doc.querySelector('.item[data-id="12"]').click();
+  await tick(100);
+  ok(!!doc.querySelector('.item[data-id="12"] .full .prose'), "clicking the card again reopens it");
+  doc.querySelector('.item[data-id="12"] .head .t').click();
+  await tick(60);
+  ok(!doc.querySelector(".full .prose"), "clicking the open card's title closes it");
+  // The second click of a double-click does not close it.
+  doc.querySelector('.item[data-id="12"]').click();
+  await tick(100);
+  doc.querySelector('.item[data-id="12"] .head .t')
+    .dispatchEvent(new window.MouseEvent("click", { bubbles: true, detail: 2 }));
+  await tick(60);
+  ok(!!doc.querySelector('.item[data-id="12"] .full .prose'), "but a double-click's second click leaves it open");
+  doc.querySelector('.item[data-id="12"] [data-collapse]').click();
+  await tick(60);
+
   // A click on a link inside an open card must not also re-open the card.
   doc.querySelector('.item[data-id="12"]').click();
   await tick(100);
