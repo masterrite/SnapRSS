@@ -5,7 +5,7 @@
 # SnapRSS
 An RSS feed reader inspired by QuiteRSS in Rust and uses Tauri frontend. For my own use. Written by Claude using Opus 5.5. Icon and name are by me.
 
-I've been using QuiteRSS for years. But it has fell out of maintenance and the interface has become outdated and clunky. Apparently it's quite a spaghetti code, too, making migration from Qt 5 to modern Qt 6 hard, according to discussions in its Issues page. Thanks to the advent of agentic AI, I now have the tools to realize my ideas without a developer or pay my friend way more than I could afford to build something he definitely won't have time to maintain. So here it is, QuiteRSS rewritten from scratch in Rust.
+I've been using QuiteRSS for years. But it has fell out of maintenance and the interface has become outdated and clunky. Apparently it's quite a spaghetti code, too, making migration from Qt 5 to modern Qt 6 hard, according to discussions in its Issues page. Thanks to the advent of agentic AI, I now have the tools to realize my ideas without paying my programmer friend way more than I could afford to build something he definitely won't have time to maintain. So here it is, QuiteRSS rewritten from scratch in Rust. Hmm? Learn coding myself? What do I do for a living, established content creator with a handful of free time and brain bandwidth?
 
 ## Features
 
