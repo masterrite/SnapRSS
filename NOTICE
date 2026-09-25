@@ -1,0 +1,8 @@
+SnapRSS
+Copyright 2026 The SnapRSS Authors
+
+This product includes software developed by the SnapRSS Authors.
+
+SnapRSS can import a QuiteRSS (https://github.com/QuiteRSS/quiterss) feeds.db
+file. Reading that format is interoperability only; no QuiteRSS source code is
+included in or derived into this project.

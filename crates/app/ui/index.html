@@ -1,0 +1,696 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Image hosts with hotlink protection answer 403 to a Referer they do not
+     know, and the webview's is tauri.localhost. With no Referer they serve. -->
+<meta name="referrer" content="no-referrer">
+<title>SnapRSS</title>
+<style>
+  /* Design tokens. The eight ported themes each override this block. */
+  :root {
+    --chrome:      #E4E0D8;
+    --chrome-line: #D5D0C7;
+    --bar:         #F4F1EC;
+    --line:        #DCD7CF;
+    --sidebar:     #EDE9E2;
+    --list:        #F7F5F1;
+    --page:        #FFFFFF;
+    --sel:         #E4DFD5;
+    --sel-soft:    rgba(194, 87, 31, 0.13);
+    --ink:         #0C0D0F;
+    --ink-2:       #2C3035;
+    --ink-3:       #3F444B;
+    /* The small grey text: dates, captions, counts, read titles. At least
+       4.5:1 on the darkest panel of every light theme (Gray's chrome). */
+    --ink-4:       #50565D;
+    --faint:       #B4B9BE;
+    --accent:      #B8531D;
+    --on-accent:   #FFF6F0;
+    /* Accent-coloured text on a panel: a shade darker than the accent so
+       small text still reads at 4.5:1. */
+    --accent-text: #8E3F16;
+    --star:        #C79A2E;
+    --unread:      #2F6CB5;
+    --bad:         #B33A35;
+    --row:         62px;
+    --title-size:  13.5px;
+    --meta-size:   11.5px;
+    --ui:    "Segoe UI", -apple-system, "Inter", system-ui, sans-serif;
+    --serif: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+    --mono:  "Cascadia Mono", "SF Mono", Consolas, monospace;
+  }
+  :root[data-density="compact"] { --row: 22px; --title-size: 12px; --meta-size: 11px; }
+
+  :root[data-theme="dark"] {
+    --chrome:#16191D; --chrome-line:#262B31; --bar:#1B1E22; --line:#262B31;
+    --sidebar:#131619; --list:#181B1E; --page:#1A1D21; --sel:#262C33;
+    --sel-soft:rgba(226,112,58,0.15);
+    --ink:#F5F2ED; --ink-2:#D5DADF; --ink-3:#A9B0B7; --ink-4:#8D959D; --faint:#4A5158;
+    --accent:#E2703A; --on-accent:#17120E; --accent-text: #E68558; --star:#D9A93F; --bad:#E0685F;
+    --unread:#5B9BE0;
+  }
+  :root[data-theme="gray"]   { --chrome:#CFCFCF; --bar:#E4E4E4; --sidebar:#DCDCDC; --list:#EAEAEA; --page:#F6F6F6; --line:#C4C4C4; --chrome-line:#BDBDBD; --sel:#D2D2D2; --accent:#4A4A4A; --sel-soft:rgba(74,74,74,.13); --accent-text:#4A4A4A; }
+  :root[data-theme="green"]  { --chrome:#D6E3CE; --bar:#E7EFE2; --sidebar:#E2EBDC; --list:#EEF3EA; --page:#F8FBF5; --line:#C9D8C1; --chrome-line:#BCCCB3; --sel:#DCE8D5; --accent:#3F6B31; --sel-soft:rgba(63,107,49,.13); --accent-text:#375E2B; }
+  :root[data-theme="orange"] { --chrome:#F0DCC8; --bar:#F8EDE2; --sidebar:#F6E7D8; --list:#FAF1E8; --page:#FEFAF6; --line:#E4CDB6; --chrome-line:#DBC0A5; --sel:#F2E0CC; --accent:#B4531C; --sel-soft:rgba(180,83,28,.13); --accent-text:#8D4016; }
+  :root[data-theme="pink"]   { --chrome:#F0D5DE; --bar:#F9E9EF; --sidebar:#F6E3EA; --list:#FAEFF3; --page:#FEF8FA; --line:#E4C3CF; --chrome-line:#DBB4C3; --sel:#F2D8E1; --accent:#9C3D61; --sel-soft:rgba(156,61,97,.13); --accent-text:#8C3757; }
+  :root[data-theme="purple"] { --chrome:#DDD4EC; --bar:#EFEAF7; --sidebar:#E7E0F2; --list:#F2EEF8; --page:#FAF8FD; --line:#CCC1E0; --chrome-line:#BFB2D6; --sel:#E1D8F0; --accent:#5E4390; --sel-soft:rgba(94,67,144,.13); --accent-text:#594089; }
+  :root[data-theme="system2"]{ --chrome:#E3E5E9; --bar:#F1F2F4; --sidebar:#EDEEF1; --list:#F6F7F9; --page:#FFFFFF; --line:#D6D9DE; --chrome-line:#CBCFD5; --sel:#DFE3E9; --accent:#2F5F91; --sel-soft:rgba(47,95,145,.13); --accent-text:#2D5A8A; }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: var(--ui); font-size: 13px; color: var(--ink);
+    background: var(--page); display: flex; flex-direction: column;
+    overflow: hidden; -webkit-font-smoothing: antialiased;
+  }
+  button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+  input  { font: inherit; }
+  ::selection { background: var(--sel-soft); }
+
+  .bar {
+    display: flex; align-items: center; gap: 3px; padding: 0 8px;
+    background: var(--bar); border-bottom: 1px solid var(--line); flex-shrink: 0;
+  }
+  #toolbar { height: 48px; gap: 5px; padding: 0 12px; }
+  .panel-bar { height: 36px; }
+  :root[data-density="compact"] #toolbar { height: 34px; }
+  :root[data-density="compact"] .panel-bar { height: 26px; }
+
+  .ibtn {
+    width: 30px; height: 30px; border-radius: 7px; display: flex;
+    align-items: center; justify-content: center; color: var(--ink-3); flex-shrink: 0;
+  }
+  .ibtn:hover { background: var(--sel); }
+  .ibtn:disabled { opacity: .4; cursor: default; }
+  .ibtn.on { color: var(--star); }
+  /* Slider knobs are filled with the bar colour so the track reads as passing
+     behind them. In CSS, because var() does not resolve inside an SVG fill
+     attribute. */
+  .knob { fill: var(--bar); }
+  .panel-bar .ibtn { width: 26px; height: 26px; border-radius: 6px; }
+  .sep { width: 1px; height: 18px; background: var(--line); margin: 0 4px; flex-shrink: 0; }
+  .grow { flex: 1 1 auto; }
+
+  .primary {
+    display: flex; align-items: center; gap: 7px; height: 30px; padding: 0 12px;
+    border-radius: 7px; background: var(--accent); color: var(--on-accent);
+    font-size: 12.5px; font-weight: 600; flex-shrink: 0;
+  }
+  .primary:hover { filter: brightness(1.07); }
+  .pill {
+    display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px;
+    border-radius: 7px; border: 1px solid var(--line); background: var(--page);
+    color: var(--ink-2); font-size: 12px; flex-shrink: 0;
+  }
+  .pill:hover { background: var(--sel); }
+  .seg { display: flex; padding: 2px; border-radius: 8px; background: var(--sel); border: 1px solid var(--line); flex-shrink: 0; }
+  .seg button { height: 24px; padding: 0 11px; border-radius: 6px; color: var(--ink-4); font-size: 12px; }
+  .seg button[aria-pressed="true"] { background: var(--page); color: var(--ink); font-weight: 500; }
+
+  #search {
+    display: flex; align-items: center; gap: 8px; width: 230px; height: 30px;
+    padding: 0 11px; border-radius: 8px; background: var(--page); border: 1px solid var(--line);
+  }
+  #search input { flex: 1; min-width: 0; border: 0; background: none; outline: none; color: var(--ink); font-size: 12.5px; }
+  kbd { font-family: var(--mono); font-size: 10.5px; color: var(--ink-4); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+
+  /* Widths are custom properties so the grips can move them without
+     rewriting the template. */
+  :root { --w-sidebar: 268px; --w-list: 468px; --h-cats: 240px; }
+  #body {
+    flex: 1; display: grid; min-height: 0;
+    grid-template-columns: var(--w-sidebar) 4px var(--w-list) 4px 1fr;
+  }
+  :root[data-layout="newspaper"] #body { grid-template-columns: var(--w-sidebar) 4px 1fr; }
+  :root[data-layout="newspaper"] #grip-list { display: none; }
+
+  /* Grips are 4px of grid track with a wider invisible grab area, so they are
+     easy to hit without drawing a thick line. */
+  .vgrip, .hgrip { position: relative; background: var(--line); }
+  .vgrip { cursor: col-resize; }
+  .hgrip { cursor: row-resize; height: 4px; flex-shrink: 0; }
+  .vgrip::after, .hgrip::after { content: ""; position: absolute; inset: -3px; }
+  .vgrip:hover, .hgrip:hover, .vgrip.dragging, .hgrip.dragging { background: var(--accent); }
+  body.resizing { cursor: col-resize; user-select: none; }
+  body.resizing-v { cursor: row-resize; user-select: none; }
+  #feeds { background: var(--sidebar); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+  #listpane { background: var(--list); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+  #readpane { background: var(--page); display: flex; flex-direction: column; min-height: 0; }
+
+  #tree { flex: 1; overflow-y: auto; padding: 4px 8px 12px; min-height: 60px; }
+
+  /* Categories sit under the feed tree, as a panel of their own with its own
+     scroll, so a long subscription list never pushes them off screen. */
+  #cats { flex-shrink: 0; border-top: 1px solid var(--line); background: var(--sidebar); display: flex; flex-direction: column; }
+  #cats-head {
+    display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px;
+    width: 100%; text-align: left; flex-shrink: 0;
+    font-size: 10px; font-weight: 600; letter-spacing: 1.1px; color: var(--ink-4);
+  }
+  #cats-head:hover { color: var(--ink-2); }
+  #cats-head .chev { transition: transform .14s; flex-shrink: 0; }
+  #cats-head[aria-expanded="false"] .chev { transform: rotate(-90deg); }
+  #catlist { overflow-y: auto; height: var(--h-cats); padding: 0 8px 8px; display: flex; flex-direction: column; gap: 1px; }
+  #cats-head[aria-expanded="false"] + #catlist { display: none; }
+  #cats:has(#cats-head[aria-expanded="false"]) { flex: 0 0 auto; }
+  .node {
+    display: flex; align-items: center; gap: 8px; width: 100%; height: 27px;
+    padding: 0 8px; border-radius: 6px; text-align: left; color: var(--ink-2); font-size: 12.5px;
+    cursor: default; user-select: none; box-sizing: border-box;
+  }
+  .node:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  /* Chromium needs this to drag a non-anchor element that contains text. */
+  .node[draggable="true"] { -webkit-user-drag: element; }
+  :root[data-density="compact"] .node { height: 20px; font-size: 11.5px; }
+  .node:hover { background: var(--sel); }
+  .node[aria-current="true"] { background: var(--sel-soft); font-weight: 600; color: var(--ink); }
+  .node .label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .node .count { font-size: 11px; color: var(--ink-4); font-variant-numeric: tabular-nums; }
+  .node[aria-current="true"] .count { color: var(--accent-text); font-weight: 600; }
+  .favicon {
+    width: 16px; height: 16px; border-radius: 4px; flex-shrink: 0; color: #fff;
+    font-size: 9px; font-weight: 600; display: flex; align-items: center; justify-content: center;
+  }
+  .favicon.tiny { width: 12px; height: 12px; font-size: 7.5px; border-radius: 3px; }
+  .twisty { width: 12px; flex-shrink: 0; color: var(--ink-4); display: flex; }
+  /* A folder's chevron is its own hit target, a little larger than it looks,
+     and turns to point right when the folder is folded. */
+  .twisty.toggle { width: 18px; height: 18px; margin-left: -3px; align-items: center;
+                   justify-content: center; border-radius: 4px; cursor: pointer; }
+  .twisty.toggle:hover { background: var(--sel); color: var(--ink-2); }
+  .twisty.toggle svg { transition: transform .12s; }
+  .twisty.toggle[aria-expanded="false"] svg { transform: rotate(-90deg); }
+  .twisty.dotwrap { justify-content: center; align-items: center; }
+  .swatch-dot { width: 8px; height: 8px; border-radius: 2.5px; flex-shrink: 0; }
+  /* Category icons are tinted by class. A style attribute would be dropped:
+     Tauri's CSP carries a nonce, which makes 'unsafe-inline' inert. */
+  .caticon { flex-shrink: 0; color: var(--ink-4); }
+  .caticon[data-tone="unread"] { color: var(--unread); }
+  .caticon[data-tone="star"]   { color: var(--star); }
+  .caticon[data-tone="dim"]    { color: var(--ink-4); }
+  .caption { padding: 10px 8px 4px; font-size: 10px; font-weight: 600; letter-spacing: 1.1px; color: var(--ink-4); }
+  .rule { height: 1px; background: var(--line); margin: 8px 6px; }
+
+  #listhead {
+    height: 30px; display: flex; align-items: center; gap: 10px; padding: 0 10px 0 14px;
+    background: var(--sidebar); border-bottom: 1px solid var(--line); flex-shrink: 0;
+    font-size: 10px; font-weight: 600; letter-spacing: .9px; color: var(--ink-4);
+  }
+  :root[data-density="compact"] #listhead { height: 22px; }
+  #list { flex: 1; overflow-y: auto; }
+  .group { padding: 9px 14px 5px; font-size: 10px; font-weight: 600; letter-spacing: 1px; color: var(--ink-4); }
+  :root[data-density="compact"] .group {
+    padding: 0 14px; height: 19px; display: flex; align-items: center;
+    background: var(--sidebar); border-bottom: 1px solid var(--line); font-size: 9.5px;
+  }
+
+  .item { display: flex; gap: 10px; padding: 9px 14px; cursor: default; }
+  .item:hover { background: var(--sel); }
+  .item[aria-selected="true"] { background: var(--sel); }
+  .item .t { font-size: var(--title-size); font-weight: 700; color: var(--ink); line-height: 1.35; margin-bottom: 4px; }
+  .item.read .t { font-weight: 400; color: var(--ink-4); }
+  .item .m { display: flex; align-items: center; gap: 7px; font-size: var(--meta-size); color: var(--ink-3); }
+  .item .star { color: var(--faint); flex-shrink: 0; display: flex; }
+  .item .star.on { color: var(--star); }
+
+  /* Star and read-dot travel together, tighter than the gap to the title. */
+  .item .marks { display: flex; gap: 5px; align-items: flex-start; padding-top: 2px; flex-shrink: 0; }
+  .item .dot {
+    width: 16px; height: 16px; flex-shrink: 0; display: flex;
+    align-items: center; justify-content: center; border-radius: 50%;
+  }
+  .item .dot i {
+    width: 9px; height: 9px; border-radius: 50%; background: var(--unread);
+    transition: box-shadow .12s;
+  }
+  /* Read articles keep a hollow ring, so the control stays in the same place
+     and stays clickable rather than vanishing. */
+  .item.read .dot i { background: transparent; border: 1.5px solid var(--faint); }
+  .item .dot:hover i { box-shadow: 0 0 0 3px var(--sel-soft); }
+
+  /* Focus (what the reading pane shows) and selection (what actions apply to)
+     are different things and have to look different. */
+  .item[aria-selected="true"] { background: var(--sel); }
+  .item[data-sel="true"] { background: var(--sel-soft); box-shadow: inset 2px 0 0 var(--accent); }
+  .item[data-sel="true"][aria-selected="true"] { background: var(--sel); }
+  .item { user-select: none; }
+
+  #selcount {
+    display: none; align-items: center; height: 20px; padding: 0 8px;
+    border-radius: 10px; background: var(--accent); color: var(--on-accent);
+    font-size: 11px; font-weight: 600; flex-shrink: 0;
+  }
+  #selcount.show { display: flex; }
+
+  :root[data-density="compact"] .item {
+    height: var(--row); align-items: center; padding: 0 10px 0 6px;
+    border-bottom: 1px solid var(--line); gap: 8px;
+  }
+  :root[data-density="compact"] .item .marks { align-items: center; padding-top: 0; gap: 3px; }
+  :root[data-density="compact"] .item .dot { width: 13px; height: 13px; }
+  :root[data-density="compact"] .item .dot i { width: 7px; height: 7px; }
+  :root[data-density="compact"] .item .body { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+  :root[data-density="compact"] .item .t { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+  :root[data-density="compact"] .item .m { flex-shrink: 0; }
+  :root[data-density="compact"] .item .m .feed { display: none; }
+  :root[data-density="compact"] .item .star { width: 16px; justify-content: center; padding: 0; }
+
+  .chip { padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; background: var(--sel); color: var(--ink-3); }
+
+  #readbar { height: 44px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 4px; padding: 0 14px; flex-shrink: 0; }
+  :root[data-density="compact"] #readbar { height: 30px; }
+  #openext {
+    display: flex; align-items: center; gap: 7px; height: 30px; padding: 0 10px 0 12px;
+    border-radius: 7px; border: 1px solid var(--line); background: var(--bar);
+    color: var(--ink); font-size: 12.5px; font-weight: 500;
+  }
+  #openext:hover { background: var(--sel); }
+
+  #article { flex: 1; overflow-y: auto; padding: 36px 40px 72px; }
+  /* One centred measure for the whole article, headline included, so the
+     column does not sit against the left edge of a wide pane. */
+  #article > .col { max-width: 40em; margin: 0 auto; }
+  #article .kicker { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; font-size: 10.5px; }
+  #article .kicker .src { font-weight: 600; letter-spacing: 1.2px; color: var(--accent-text); text-transform: uppercase; }
+  #article .kicker .when { color: var(--ink-4); font-size: 11.5px; }
+  #article h1.headline {
+    margin: 0 0 12px; font-family: var(--serif); font-size: 33px; font-weight: 600;
+    line-height: 1.2; letter-spacing: -.2px; color: var(--ink);
+  }
+  #article .byline { font-size: 12.5px; color: var(--ink-4); margin-bottom: 26px; }
+  .prose { font-family: var(--serif); font-size: 17.5px; line-height: 1.68; color: var(--ink-2); }
+  .prose p, .prose ul, .prose ol, .prose blockquote, .prose figure, .prose pre, .prose table { margin: 0 0 18px; }
+  .prose h2, .prose h3, .prose h4 { font-family: var(--ui); color: var(--ink); line-height: 1.3; margin: 30px 0 10px; }
+  .prose h2 { font-size: 21px; } .prose h3 { font-size: 17px; } .prose h4 { font-size: 15px; }
+  .prose img { max-width: 100%; height: auto; border-radius: 8px; display: block; }
+  .prose figure { margin-inline: 0; }
+  .prose figcaption { font-family: var(--ui); font-size: 12.5px; color: var(--ink-4); margin-top: 8px; }
+  .prose blockquote { padding-left: 22px; border-left: 2px solid var(--line); font-style: italic; color: var(--ink); }
+  .prose pre {
+    font-family: var(--mono); font-size: 13px; line-height: 1.55; background: var(--sidebar);
+    border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; overflow-x: auto;
+  }
+  .prose code { font-family: var(--mono); font-size: .88em; }
+  .prose :not(pre) > code { background: var(--sidebar); border-radius: 4px; padding: 1px 5px; }
+  .prose table { border-collapse: collapse; font-family: var(--ui); font-size: 14px; width: 100%; }
+  .prose th, .prose td { border: 1px solid var(--line); padding: 7px 10px; text-align: left; }
+  .prose a { color: var(--accent); }
+
+  #status {
+    height: 26px; flex-shrink: 0; display: flex; align-items: center; gap: 14px;
+    padding: 0 14px; background: var(--chrome); border-top: 1px solid var(--chrome-line);
+    font-size: 11px; color: var(--ink-3);
+  }
+  .empty { padding: 60px 40px; color: var(--ink-4); font-size: 13.5px; text-align: center; }
+  .spin { animation: spin 900ms linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #toast {
+    position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%);
+    background: var(--ink); color: var(--page); padding: 9px 16px; border-radius: 8px;
+    font-size: 12.5px; opacity: 0; pointer-events: none; transition: opacity .18s;
+  }
+  #toast.show { opacity: .95; }
+  #toast { z-index: 90; }
+
+  #updatebar {
+    /* Bottom right, clear of the toolbars it would otherwise cover. */
+    position: fixed; right: 16px; bottom: 36px; z-index: 85;
+    display: flex; align-items: center; gap: 10px;
+    background: var(--page); border: 1px solid var(--line); border-radius: 9px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.18); padding: 8px 12px; font-size: 12.5px;
+  }
+
+  .ctx {
+    position: fixed; z-index: 60; min-width: 196px; padding: 5px;
+    background: var(--page); border: 1px solid var(--line); border-radius: 9px;
+    box-shadow: 0 12px 34px rgba(0,0,0,.20); font-size: 12.5px;
+  }
+  .ctx button {
+    display: flex; align-items: center; gap: 9px; width: 100%; height: 28px;
+    padding: 0 10px; border-radius: 6px; text-align: left; color: var(--ink-2);
+  }
+  .ctx button:hover { background: var(--sel); color: var(--ink); }
+  .ctx button[disabled] { color: var(--faint); background: none; cursor: default; }
+  .ctx button.danger { color: var(--bad); }
+  .ctx .ctx-sep { height: 1px; background: var(--line); margin: 5px 7px; }
+  .ctx .ctx-head {
+    padding: 5px 10px 7px; font-size: 10px; font-weight: 600; letter-spacing: 1px;
+    color: var(--ink-4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .ctx .tick { width: 13px; flex-shrink: 0; color: var(--accent); }
+  .ctx .ctx-label { flex: 1; white-space: nowrap; }
+  .ctx .ctx-hint { font-size: 11px; color: var(--ink-4); padding-left: 18px; flex-shrink: 0; }
+  .ctx .ctx-arrow { flex-shrink: 0; margin-left: 10px; color: var(--ink-4); }
+  .ctx button:hover .ctx-arrow { color: var(--ink-2); }
+
+  /* ---- settings window ---- */
+  .sheet-back { position: fixed; inset: 0; background: rgba(0,0,0,.30); display: flex;
+    align-items: center; justify-content: center; z-index: 55; }
+  .sheet {
+    background: var(--page); border: 1px solid var(--line); border-radius: 12px;
+    width: min(880px, calc(100vw - 80px)); height: min(640px, calc(100vh - 80px));
+    display: flex; flex-direction: column; overflow: hidden;
+    box-shadow: 0 24px 60px rgba(0,0,0,.28);
+  }
+  .sheet-top {
+    height: 50px; flex-shrink: 0; display: flex; align-items: center;
+    padding: 0 10px 0 20px; background: var(--chrome); border-bottom: 1px solid var(--chrome-line);
+    font-size: 14px; font-weight: 600;
+  }
+  .sheet-body { flex: 1; display: grid; grid-template-columns: 186px 1fr; min-height: 0; }
+  .sheet-nav {
+    background: var(--sidebar); border-right: 1px solid var(--line);
+    padding: 10px 8px; display: flex; flex-direction: column; gap: 1px; overflow-y: auto;
+  }
+  .sheet-nav button {
+    display: flex; align-items: center; height: 30px; padding: 0 11px; border-radius: 7px;
+    width: 100%; text-align: left; font-size: 12.5px; color: var(--ink-3);
+  }
+  .sheet-nav button:hover { background: var(--sel); }
+  .sheet-nav button[aria-current="true"] { background: var(--sel); color: var(--ink); font-weight: 600; }
+  .sheet-page { padding: 22px 26px; overflow-y: auto; }
+  .sheet-foot {
+    height: 56px; flex-shrink: 0; display: flex; align-items: center; gap: 9px;
+    padding: 0 20px; background: var(--chrome); border-top: 1px solid var(--chrome-line);
+  }
+
+  .grp { font-size: 10px; font-weight: 600; letter-spacing: 1px; color: var(--ink-4);
+         margin: 0 0 11px; }
+  .grp:not(:first-child) { margin-top: 26px; }
+  .fld { display: flex; align-items: center; gap: 10px; min-height: 30px; margin-bottom: 9px; }
+  .fld > label:first-child { flex: 1; font-size: 12.5px; color: var(--ink-2); }
+  .fld .note { font-size: 11.5px; color: var(--ink-4); }
+  .sub { margin-left: 26px; }
+  input[type="number"], input[type="text"], select {
+    height: 30px; padding: 0 9px; border-radius: 7px; border: 1px solid var(--line);
+    background: var(--page); color: var(--ink); outline: none; font-size: 12.5px;
+  }
+  input[type="number"] { width: 78px; }
+  input:focus, select:focus { border-color: var(--accent); }
+
+  .sw { width: 32px; height: 18px; border-radius: 9px; background: var(--line); flex-shrink: 0;
+        display: flex; align-items: center; padding: 0 2px; cursor: pointer; transition: background .13s; }
+  .sw i { width: 14px; height: 14px; border-radius: 50%; background: var(--page);
+          transition: transform .13s; }
+  .sw[aria-checked="true"] { background: var(--accent); }
+  .sw[aria-checked="true"] i { transform: translateX(14px); }
+
+  .themes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .theme-card { cursor: pointer; border: 1px solid var(--line); border-radius: 9px; padding: 6px;
+                background: var(--page); }
+  .theme-card[aria-checked="true"] { border: 2px solid var(--accent); padding: 5px; }
+  .theme-card .name { font-size: 12px; padding: 7px 2px 1px; color: var(--ink-2); }
+  .theme-card[aria-checked="true"] .name { font-weight: 600; color: var(--ink); }
+
+  .stat { display: flex; justify-content: space-between; padding: 7px 0;
+          border-bottom: 1px solid var(--line); font-size: 12.5px; }
+  .stat:last-child { border-bottom: 0; }
+  .stat .v { font-variant-numeric: tabular-nums; color: var(--ink-4); }
+  .keys { display: grid; grid-template-columns: auto 1fr; gap: 7px 16px; font-size: 12.5px;
+          align-items: center; }
+  .keys kbd { justify-self: start; }
+  .danger-zone { border: 1px solid var(--line); border-radius: 9px; padding: 14px 16px;
+                 margin-top: 8px; }
+
+  .modal-back {
+    position: fixed; inset: 0; background: rgba(0,0,0,.28);
+    display: flex; align-items: center; justify-content: center;
+    /* Above the settings sheet (55) and context menus (60): a dialog opened
+       from Settings has to be on top of Settings, or it opens invisibly
+       behind it and every further click adds another. */
+    z-index: 80;
+  }
+  .modal {
+    background: var(--page); border: 1px solid var(--line); border-radius: 12px;
+    padding: 20px 22px; width: 420px; box-shadow: 0 18px 48px rgba(0,0,0,.22);
+  }
+  .modal-title { font-size: 14px; font-weight: 600; margin-bottom: 14px; color: var(--ink); }
+  .modal-input {
+    width: 100%; height: 34px; padding: 0 11px; border-radius: 7px;
+    border: 1px solid var(--line); background: var(--list); color: var(--ink);
+    outline: none; font-size: 13px; margin-bottom: 16px;
+  }
+  .modal-input:focus { border-color: var(--accent); }
+  .modal-row { display: flex; gap: 8px; justify-content: flex-end; }
+  .primary.danger { background: var(--bad); }
+  .modal.wide { width: 560px; max-height: calc(100vh - 80px); overflow-y: auto; }
+  .warnicon { color: var(--bad); display: flex; }
+  .faint { color: var(--faint); }
+  .dim { color: var(--ink-4); }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .empty.nofeeds { padding: 28px 12px; font-size: 12.5px; }
+  .note.about { line-height: 1.65; max-width: 34em; margin: 0 auto; text-align: center; }
+  .grow1 { flex: 1; }
+  .flabel { flex: 0 0 96px; }
+  .pad { padding: 8px 0 14px; }
+  .labcap { padding: 8px 8px 3px; }
+  .mt5 { margin-top: 5px; }
+  .mt18 { margin-top: 18px; }
+  .mb14 { margin-bottom: 14px; }
+  .mono11 { word-break: break-all; font-family: var(--mono); font-size: 11px; }
+  .aboutbox { text-align: center; padding: 30px 0 20px; }
+  .appname { font-size: 19px; font-weight: 600; }
+  .applogo { display: block; margin: 0 auto 14px; border-radius: 12px; }
+  .swatchsvg { display: block; border-radius: 6px; }
+  .sheet[data-size="props"] { height: min(600px, calc(100vh - 80px)); width: min(700px, calc(100vw - 80px)); }
+
+  /* Update progress: a hairline under the toolbar, so a poll is visible
+     without a dialog in the way. */
+  #progress { height: 0; overflow: hidden; background: var(--line); flex-shrink: 0;
+              transition: height .12s; }
+  #progress.show { height: 3px; }
+  #progress i { display: block; height: 100%; width: var(--pct, 0%); background: var(--accent);
+                transition: width .2s; }
+  .ibtn.busy, .primary.busy { opacity: .75; }
+  /* The status line is the one place an update is always visible, whichever
+     toolbars have been hidden. */
+  #st-msg { display: flex; align-items: center; gap: 7px; }
+  #st-msg .dotpulse {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
+    animation: pulse 1s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+  .chip.pendingchip { background: var(--sel-soft); color: var(--accent-text); }
+
+  /* ---- customisable toolbars ----
+     Buttons are never destroyed and rebuilt, only reordered and hidden, so the
+     handlers bound once at startup survive every customisation. The label span
+     is always in the markup and CSS decides whether it is drawn. */
+  .tlabel { display: none; }
+  /* Text mode hides the icon only where there is a label to replace it.
+     A button with no .tlabel keeps its icon, or it would vanish entirely —
+     which is how the app menu disappeared and took Settings with it. */
+  .bar[data-style="text"] > button:has(> .tlabel) > svg { display: none; }
+  .bar[data-style="icontext"] .tlabel,
+  .bar[data-style="text"] .tlabel { display: inline; }
+  .bar[data-style="icontext"] .ibtn,
+  .bar[data-style="text"] .ibtn { width: auto; gap: 7px; padding: 0 10px; font-size: 12.5px; }
+  .bar[data-style="icon"] .primary .tlabel { display: none; }
+  .bar[data-style="icon"] #btn-update { padding: 0 9px; }
+  .bar[hidden] { display: none; }
+  [data-cmd][hidden] { display: none !important; }
+
+  /* ---- drag and drop in the feed tree ---- */
+  .node[draggable="true"] { cursor: default; }
+  .node.dragging { opacity: .45; }
+  /* A line for "drop beside this", a ring for "drop inside this". The two
+     have to look different or every drop is a guess. */
+  .node.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+  .node.drop-after  { box-shadow: inset 0 -2px 0 var(--accent); }
+  .node.drop-into   { background: var(--sel-soft); box-shadow: inset 0 0 0 1.5px var(--accent); }
+  #tree.drop-root { box-shadow: inset 0 0 0 1.5px var(--accent); border-radius: 8px; }
+
+  /* ---- label chips on a list row ---- */
+  .lchips { display: flex; gap: 4px; align-items: center; flex-shrink: 0; }
+  /* The colour arrives as an inline background. The class carries one too, so
+     a label with no colour set still reads as a chip rather than as white text
+     on a white row. */
+  .lchip {
+    height: 13px; padding: 0 5px; border-radius: 3px; font-size: 9.5px; font-weight: 600;
+    display: flex; align-items: center; color: #fff; letter-spacing: .2px; white-space: nowrap;
+    background: var(--ink-4);
+  }
+  .lchip.dotonly { width: 8px; height: 8px; padding: 0; border-radius: 2.5px; }
+
+  /* ---- newspaper layout ----
+     One wide column of cards. The reading pane is hidden rather than narrowed,
+     because a card that expands in place is the whole point of this layout and
+     a second copy of the same article beside it is just noise. */
+  :root[data-layout="newspaper"] #readpane { display: none; }
+  :root[data-layout="newspaper"] #listhead { display: none; }
+  :root[data-layout="newspaper"] #list { padding: 20px 0 60px; }
+  :root[data-layout="newspaper"] .group {
+    max-width: 52em; margin: 0 auto; padding: 18px 26px 8px; background: none; border: 0; height: auto;
+  }
+  :root[data-layout="newspaper"] .item {
+    display: block; max-width: 52em; margin: 0 auto 14px; padding: 18px 26px 20px;
+    background: var(--page); border: 1px solid var(--line); border-radius: 10px; height: auto;
+  }
+  :root[data-layout="newspaper"] .item:hover { background: var(--page); border-color: var(--faint); }
+  :root[data-layout="newspaper"] .item[aria-selected="true"] { background: var(--page); border-color: var(--accent); }
+  :root[data-layout="newspaper"] .item .head { display: flex; gap: 12px; align-items: flex-start; }
+  :root[data-layout="newspaper"] .item .marks { align-items: center; padding-top: 3px; }
+  :root[data-layout="newspaper"] .item .body { flex: 1; min-width: 0; }
+  :root[data-layout="newspaper"] .item .t {
+    font-family: var(--serif); font-size: 21px; font-weight: 600; line-height: 1.25;
+    margin-bottom: 7px; white-space: normal; overflow: visible;
+  }
+  :root[data-layout="newspaper"] .item.read .t { color: var(--ink-3); font-weight: 600; }
+  :root[data-layout="newspaper"] .item .ex {
+    font-family: var(--serif); font-size: 14.5px; line-height: 1.55; color: var(--ink-3);
+    margin-top: 8px;
+  }
+  :root[data-layout="newspaper"] .item .full { margin-top: 18px; }
+  :root[data-layout="newspaper"] .item .full .prose { font-size: 16px; }
+  :root[data-layout="newspaper"] .item .cardbar {
+    display: flex; gap: 8px; align-items: center; margin-top: 14px;
+    padding-top: 12px; border-top: 1px solid var(--line);
+  }
+  :root[data-layout="newspaper"] .item .cardbar .pill { height: 26px; font-size: 11.5px; }
+  /* Compact newspaper is narrower and tighter, not a different shape. */
+  :root[data-layout="newspaper"][data-density="compact"] .item { padding: 12px 18px 14px; margin-bottom: 9px; }
+  :root[data-layout="newspaper"][data-density="compact"] .item .t { font-size: 17px; }
+  :root[data-layout="newspaper"][data-density="compact"] .item .ex { font-size: 13px; }
+
+  /* ---- editors for labels, filters and toolbars ---- */
+  .erow {
+    display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: 8px;
+    border: 1px solid var(--line); margin-bottom: 7px; background: var(--page);
+  }
+  .erow .en { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+  .erow .sub2 { font-size: 11.5px; color: var(--ink-4); }
+  .erow .mini { width: 24px; height: 24px; border-radius: 6px; display: flex;
+                align-items: center; justify-content: center; color: var(--ink-4); }
+  .erow .mini:hover { background: var(--sel); color: var(--ink-2); }
+  .erow .mini.danger:hover { color: var(--bad); }
+  .erow.off .en { color: var(--ink-4); }
+  .erow .warn { color: var(--bad); font-size: 11.5px; }
+  .swatch { width: 16px; height: 16px; border-radius: 4px; flex-shrink: 0; border: 1px solid rgba(0,0,0,.15); }
+  .colors { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+  .colors button { width: 22px; height: 22px; border-radius: 6px; border: 2px solid transparent; }
+  .colors button[aria-pressed="true"] { border-color: var(--ink); }
+  .crow { display: flex; gap: 7px; align-items: center; margin-bottom: 7px; }
+  .crow select { flex: 0 0 auto; max-width: 150px; }
+  .crow input[type="text"] { flex: 1; min-width: 60px; }
+  .tb-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; }
+  .tb-item {
+    display: flex; align-items: center; gap: 9px; padding: 5px 9px; border-radius: 7px;
+    border: 1px solid var(--line); font-size: 12.5px;
+  }
+  .tb-item.hiddenitem { opacity: .5; }
+  .tb-item .en { flex: 1; }
+</style>
+</head>
+<body>
+
+<div class="bar" id="toolbar">
+  <button class="ibtn" id="btn-appmenu" data-cmd="appmenu" title="Menu" aria-haspopup="true">
+    <svg width="17" height="17" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.5 4h11M2.5 8h11M2.5 12h11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+    <span class="tlabel">Menu</span>
+  </button>
+  <button class="primary" id="btn-update" data-cmd="update" title="Update all (F5)">
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M13.2 8a5.2 5.2 0 1 1-1.6-3.75" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M13.4 2.2v3h-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <span class="tlabel">Update all</span>
+  </button>
+  <button class="ibtn" id="btn-addfeed" data-cmd="addfeed" title="Add feed (Ctrl+N)">
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 3.4v9.2M3.4 8h9.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+    <span class="tlabel">Add feed</span>
+  </button>
+  <div class="seg" id="seg-layout" data-cmd="layout">
+    <button data-layout="classic" aria-pressed="true">Classic</button>
+    <button data-layout="newspaper" aria-pressed="false">Newspaper</button>
+  </div>
+  <div class="seg" id="seg-density" data-cmd="density">
+    <button data-density="relaxed" aria-pressed="true">Relaxed</button>
+    <button data-density="compact" aria-pressed="false">Compact</button>
+  </div>
+  <button class="pill" id="btn-theme" data-cmd="theme">Theme</button>
+  <button class="pill" id="btn-import" data-cmd="import" title="Import OPML or a QuiteRSS database">Import</button>
+  <button class="pill" id="btn-export" data-cmd="export" title="Export OPML">Export</button>
+  <button class="ibtn" id="btn-settings" data-cmd="settings" title="Settings (Ctrl+,)">
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6.99 3.10 L7.23 1.50 L8.77 1.50 L9.01 3.10 L10.75 3.82 L12.06 2.86 L13.14 3.94 L12.18 5.25 L12.90 6.99 L14.50 7.23 L14.50 8.77 L12.90 9.01 L12.18 10.75 L13.14 12.06 L12.06 13.14 L10.75 12.18 L9.01 12.90 L8.77 14.50 L7.23 14.50 L6.99 12.90 L5.25 12.18 L3.94 13.14 L2.86 12.06 L3.82 10.75 L3.10 9.01 L1.50 8.77 L1.50 7.23 L3.10 6.99 L3.82 5.25 L2.86 3.94 L3.94 2.86 L5.25 3.82Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="8" cy="8" r="2.1" stroke="currentColor" stroke-width="1.3"/></svg>
+    <span class="tlabel">Settings</span>
+  </button>
+  <div class="grow"></div>
+  <div id="search">
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true" style="color:var(--ink-4);flex-shrink:0"><circle cx="7" cy="7" r="4.3" stroke="currentColor" stroke-width="1.5"/><path d="M10.2 10.2L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+    <label for="q" class="sr">Search articles</label>
+    <input id="q" type="search" placeholder="Search" autocomplete="off">
+    <kbd>/</kbd>
+  </div>
+</div>
+
+<div id="progress"><i></i></div>
+
+<div id="body">
+  <div id="feeds">
+    <div class="bar panel-bar" id="feedsbar">
+      <button class="ibtn" id="btn-addfeed2" data-cmd="addfeed" title="Add feed"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 3.4v9.2M3.4 8h9.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><span class="tlabel">Add feed</span></button>
+      <button class="ibtn" id="btn-addfolder" data-cmd="addfolder" title="Add folder"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.2 4.6h3.9l1.15 1.6h6.55v6.3a1 1 0 0 1-1 1H3.2a1 1 0 0 1-1-1z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 8.4v3M6.5 9.9h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg><span class="tlabel">Add folder</span></button>
+      <button class="ibtn" id="btn-refreshone" data-cmd="refreshone" title="Update this feed"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M13.2 8a5.2 5.2 0 1 1-1.6-3.75" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M13.4 2.2v3h-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="tlabel">Update</span></button>
+      <button class="ibtn" id="btn-feedprops" data-cmd="feedprops" title="Feed properties"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="10.5" cy="4.5" r="1.6" class="knob" stroke="currentColor" stroke-width="1.3"/><circle cx="5.5" cy="8" r="1.6" class="knob" stroke="currentColor" stroke-width="1.3"/><circle cx="9.5" cy="11.5" r="1.6" class="knob" stroke="currentColor" stroke-width="1.3"/></svg><span class="tlabel">Properties</span></button>
+      <button class="ibtn" id="btn-removefeed" data-cmd="removefeed" title="Remove"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.6 4.4h10.8M4 4.4l.7 8.1a1 1 0 0 0 1 .9h4.6a1 1 0 0 0 1-.9l.7-8.1M6 4.4V3a.9.9 0 0 1 .9-.9h2.2a.9.9 0 0 1 .9.9v1.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="tlabel">Remove</span></button>
+      <div class="grow"></div>
+    </div>
+    <div id="tree"></div>
+
+    <div id="cats-grip" class="hgrip" role="separator" aria-orientation="horizontal"
+         tabindex="0" title="Drag to resize"></div>
+    <div id="cats">
+      <button id="cats-head" aria-expanded="true" title="Categories">
+        <svg class="chev" width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 6.5L8 10.5l4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>Categories</span>
+      </button>
+      <div id="catlist"></div>
+    </div>
+  </div>
+
+  <div class="vgrip" id="grip-sidebar" role="separator" aria-orientation="vertical"
+       tabindex="0" title="Drag to resize"></div>
+
+  <div id="listpane">
+    <div class="bar panel-bar" id="listbar">
+      <button class="ibtn" id="btn-star" data-cmd="star" title="Star (S)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 2.3l1.75 3.66 3.95.55-2.87 2.78.7 3.99L8 11.4l-3.53 1.88.7-3.99L2.3 6.51l3.95-.55z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg><span class="tlabel">Star</span></button>
+      <button class="ibtn" id="btn-toggleread" data-cmd="toggleread" title="Toggle read (M)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.6 8.4L6 11.8l7.4-7.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="tlabel">Read</span></button>
+      <button class="ibtn" id="btn-labelmenu" data-cmd="label" title="Labels (L)" aria-haspopup="true"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8.3 2.2H13a.8.8 0 0 1 .8.8v4.7a1 1 0 0 1-.3.7l-5.4 5.4a1 1 0 0 1-1.4 0L2.4 9.6a1 1 0 0 1 0-1.4l5.2-5.7a1 1 0 0 1 .7-.3z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="10.8" cy="5.2" r="1" fill="currentColor"/></svg><span class="tlabel">Labels</span></button>
+      <button class="ibtn" id="btn-delete" data-cmd="delete" title="Delete (Del)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.6 4.4h10.8M4 4.4l.7 8.1a1 1 0 0 0 1 .9h4.6a1 1 0 0 0 1-.9l.7-8.1M6 4.4V3a.9.9 0 0 1 .9-.9h2.2a.9.9 0 0 1 .9.9v1.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="tlabel">Delete</span></button>
+      <button class="ibtn" id="btn-listmarkall" data-cmd="markall" title="Mark all read (Shift+M)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M1.8 8.4l2.6 2.6L9.4 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.8 11l1.6 1.6L14 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="tlabel">Mark all read</span></button>
+      <div class="grow"></div>
+      <span id="selcount"></span>
+      <span id="scopename" style="font-size:11.5px;color:var(--ink-4)"></span>
+    </div>
+    <div id="listhead"><span style="width:35px"></span><span class="grow">TITLE</span><span>DATE</span></div>
+    <div id="list"></div>
+  </div>
+
+  <div class="vgrip" id="grip-list" role="separator" aria-orientation="vertical"
+       tabindex="0" title="Drag to resize"></div>
+
+  <div id="readpane">
+    <div id="readbar">
+      <button class="ibtn" id="btn-prev" data-cmd="prev" title="Previous (K)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M10 3.5L5.5 8l4.5 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="tlabel">Previous</span></button>
+      <button class="ibtn" id="btn-next" data-cmd="next" title="Next (J)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6 3.5L10.5 8 6 12.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="tlabel">Next</span></button>
+      <button class="ibtn" id="btn-star2" data-cmd="star" title="Star (S)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 2.3l1.75 3.66 3.95.55-2.87 2.78.7 3.99L8 11.4l-3.53 1.88.7-3.99L2.3 6.51l3.95-.55z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg><span class="tlabel">Star</span></button>
+      <button class="ibtn" id="btn-readdelete" data-cmd="delete" title="Delete (Del)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.6 4.4h10.8M4 4.4l.7 8.1a1 1 0 0 0 1 .9h4.6a1 1 0 0 0 1-.9l.7-8.1M6 4.4V3a.9.9 0 0 1 .9-.9h2.2a.9.9 0 0 1 .9.9v1.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="tlabel">Delete</span></button>
+      <div class="grow"></div>
+      <button id="openext" data-cmd="openext" title="Open in browser (B)">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M9.5 2.5h4v4M13.5 2.5l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 9.2v3.3a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3.3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+        Open in browser <kbd>B</kbd>
+      </button>
+    </div>
+    <div id="article"><div class="empty">Select an article.</div></div>
+  </div>
+</div>
+
+<div id="status">
+  <span id="st-counts"></span>
+  <span class="grow"></span>
+  <span id="st-msg"></span>
+</div>
+<div id="toast"></div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

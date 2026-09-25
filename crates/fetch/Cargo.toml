@@ -1,0 +1,29 @@
+[package]
+name = "snaprss-fetch"
+description = "Feed fetching, parsing and ingestion for SnapRSS"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+snaprss-core = { path = "../core" }
+feed-rs = "2"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots", "gzip", "brotli", "system-proxy"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = "0.4"
+thiserror = "2"
+tracing = "0.1"
+tokio = { version = "1", features = ["rt", "macros", "time", "sync"] }
+futures = "0.3"
+url = "2"
+encoding_rs = "0.8"
+regex = "1"
+mediatype = "0.21.0"
+snaprss-article = { path = "../article" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+wiremock = "0.6"
+tempfile = "3"
+flate2 = "1"
+encoding_rs = "0.8"

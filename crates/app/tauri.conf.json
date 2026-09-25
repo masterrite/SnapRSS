@@ -1,0 +1,62 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "SnapRSS",
+  "version": "1.0.0",
+  "identifier": "com.snaprss.app",
+  "build": {
+    "frontendDist": "ui"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "SnapRSS",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 900,
+        "minHeight": 560,
+        "resizable": true,
+        "decorations": true,
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' https: http: data: blob: asset: http://asset.localhost; media-src 'self' https: http: data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost"
+    },
+    "withGlobalTauri": true
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "category": "News",
+    "shortDescription": "A local feed reader",
+    "longDescription": "SnapRSS is a local RSS and Atom reader. No account, no sync, no embedded browser.",
+    "publisher": "SnapRSS",
+    "copyright": "Licensed Apache-2.0",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      },
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY5ODYzMTY0OEEwRDk2MUIKUldRYmxnMktaREdHK2M1Uy9udkIvSlhmWjhUTmI4SmRHY0k5RVkwMTcyRUxNcUpsZS92K25JNUwK",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

@@ -1,0 +1,18 @@
+[package]
+name = "snaprss-article"
+description = "Article extraction and sanitisation for SnapRSS"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dom_smoothie = "0.18"
+dom_query = "0.20"
+ammonia = "4"
+url = "2"
+thiserror = "2"
+encoding_rs = "0.8"
+
+[dev-dependencies]
+tempfile = "3"
+encoding_rs = "0.8"

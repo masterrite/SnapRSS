@@ -1,0 +1,47 @@
+[package]
+name = "snaprss-app"
+description = "SnapRSS desktop application"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+snaprss-core = { path = "../core" }
+snaprss-fetch = { path = "../fetch" }
+snaprss-article = { path = "../article" }
+
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-updater = "2"
+
+rusqlite = { version = "0.32", features = ["bundled", "backup"] }
+regex = "1"
+thiserror = "2"
+url = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots", "gzip", "brotli", "system-proxy"] }
+chrono = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[target.'cfg(windows)'.dependencies]
+# Only for WM_SETICON: Tauri sets the small window icon but never the big one,
+# and the taskbar reads the big one.
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_HiDpi",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[dev-dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png", "test"] }
