@@ -203,7 +203,7 @@ fn main() {
                                     let _ = handle.emit("update-available", &info);
                                 }
                                 Ok(None) => {}
-                                // No repository set yet, or offline: nothing to say.
+                                // Offline, or no release published yet: nothing to say.
                                 Err(e) => tracing::info!(error = %e, "update check"),
                             }
                         }

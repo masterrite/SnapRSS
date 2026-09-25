@@ -1655,7 +1655,7 @@ const SETTING_DEFAULTS = {
   "startup.minimized": "0",
   "startup.close_to_tray": "0",
   "startup.minimize_to_tray": "0",
-  "updates.repo": "",
+  "updates.repo": "masterrite/SnapRSS",
   "updates.auto": "1",
 };
 
@@ -2076,9 +2076,9 @@ async function settingsPage(k, v) {
     <div class="fld">
       <label for="s-repo">Release repository</label>
       <input id="s-repo" type="text" class="grow1" spellcheck="false" autocomplete="off"
-             placeholder="owner/name" value="${esc(v["updates.repo"])}" data-num="updates.repo">
+             placeholder="masterrite/SnapRSS" value="${esc(v["updates.repo"])}" data-num="updates.repo">
     </div>
-    <div class="fld"><span class="note">The GitHub repository the release workflow publishes to.</span></div>
+    <div class="fld"><span class="note">The GitHub repository the release workflow publishes to, as owner/name, or the full URL of a latest.json. Left empty, SnapRSS uses masterrite/SnapRSS.</span></div>
     <div class="fld">
       <label>Check for new versions daily</label>
       ${sw("updates.auto", on("updates.auto"))}

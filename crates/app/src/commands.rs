@@ -1939,6 +1939,10 @@ pub struct UpdateInfo {
 
 /// Where to look for `latest.json`: a GitHub repository written `owner/name`,
 /// whose releases the release workflow publishes, or a full URL.
+/// Where releases are published. Used when `updates.repo` is empty, so a
+/// fresh install checks for updates without being set up first.
+pub const DEFAULT_UPDATE_REPO: &str = "masterrite/SnapRSS";
+
 pub fn update_endpoint(setting: &str) -> Option<url::Url> {
     let s = setting.trim().trim_end_matches('/');
     if s.is_empty() {
@@ -1973,10 +1977,11 @@ pub async fn find_update(app: &tauri::AppHandle) -> Res<Option<UpdateInfo>> {
             .query_row("SELECT value FROM settings WHERE key = 'updates.repo'", [], |r| r.get(0))
             .unwrap_or_default()
     };
+    let repo = if repo.trim().is_empty() { DEFAULT_UPDATE_REPO.to_string() } else { repo };
     let Some(endpoint) = update_endpoint(&repo) else {
-        return Err(CommandError::Invalid(
-            "Set the release repository in Settings → Updates first".into(),
-        ));
+        return Err(CommandError::Invalid(format!(
+            "\"{repo}\" in Settings → Updates is not a GitHub owner/name or a URL"
+        )));
     };
     let updater = app
         .updater_builder()
@@ -2076,5 +2081,9 @@ mod tests {
         for bad in ["", "me", "me/snap rss", "a/b/c", "../x/y"] {
             assert!(update_endpoint(bad).is_none(), "{bad}");
         }
+        assert_eq!(
+            update_endpoint(DEFAULT_UPDATE_REPO).map(|u| u.to_string()).as_deref(),
+            Some("https://github.com/masterrite/SnapRSS/releases/latest/download/latest.json")
+        );
     }
 }

@@ -6,4 +6,14 @@ members = ["crates/core", "crates/fetch", "crates/article", "crates/app"]
 version = "1.0.0"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/YOURNAME/snaprss"
+repository = "https://github.com/masterrite/SnapRSS"
+
+# Built for size. On Windows this took the executable from 32.7 MB to
+# 12.4 MB and the installer's download from about 8.8 MB to 4.2 MB. The cost
+# is roughly 1.5 ms more per article extracted, in the background; database
+# work measured the same.
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = "s"
+strip = true

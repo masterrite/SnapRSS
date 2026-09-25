@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 dom_smoothie = "0.18"
-dom_query = "0.20"
+dom_query = "0.28"
 ammonia = "4"
 url = "2"
 thiserror = "2"
