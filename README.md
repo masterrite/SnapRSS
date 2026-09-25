@@ -11,12 +11,14 @@ I've been using QuiteRSS for years. But it has fell out of maintenance and the i
 
 It's an RSS feed reader... What else do you want? Check out the settings to find out what else this thing can do.
 
-Short list:
+I'm too lazy to write a full thing but here's a short list:
 - themes
 - customizable toolbars
 - labels, rules, and filters
 - keyboard shortcuts
 - automatic updater
+
+------- Everything below are written by Claude and trimmed by me -------
 
 ## Installing
 
