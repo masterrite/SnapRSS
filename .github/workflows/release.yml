@@ -1,8 +1,17 @@
 # Builds the Windows installer, signs the update, and publishes a GitHub
 # release with the latest.json the app's update check reads.
 #
-# To release: bump "version" in crates/app/tauri.conf.json and Cargo.toml
-# (workspace), commit, then tag and push:  git tag v1.0.1 && git push --tags
+# Two ways to release. Nothing needs editing first in either:
+#
+#   From the website: Actions -> Release -> Run workflow, type the version
+#   (1.0.1) and press Run. The build makes the v1.0.1 tag and the release
+#   itself, on the latest commit of the branch picked in that dialog.
+#
+#   From a terminal: git tag v1.0.1 && git push origin v1.0.1
+#
+# The version is written into Cargo.toml and tauri.conf.json during the
+# build, so the version committed in the repository only matters for local
+# builds.
 #
 # Needs one repository secret, TAURI_SIGNING_PRIVATE_KEY: the contents of
 # snaprss-updater.key. Installed copies only accept updates signed with it.
@@ -12,6 +21,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, for example 1.0.1"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -21,6 +35,59 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
+      # The version the app reports, and the one latest.json announces, is the
+      # one in tauri.conf.json. Tagging v1.0.1 without bumping it published a
+      # build that called itself 1.0.0, so installed copies saw nothing newer.
+      # So it is written here, from the tag pushed or the version typed in.
+      - name: Set the version
+        shell: bash
+        env:
+          TYPED: ${{ inputs.version }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            VERSION="${TYPED// /}"
+            VERSION="${VERSION#v}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::\"$VERSION\" is not a version like 1.0.1"
+            exit 1
+          fi
+          # Run by hand, a version that was already released would add files
+          # to the old release instead of making a new one.
+          #
+          # ls-remote exits 2 when the tag is not there and 128 when it could
+          # not ask at all (network, auth). Treating every non-zero as "not
+          # there" skipped this check whenever the remote failed. The `|| rc=$?`
+          # keeps bash -e from stopping the step before the code is read.
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            rc=0
+            git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null || rc=$?
+            case "$rc" in
+              0)
+                echo "::error::v$VERSION already exists. Pick a higher version."
+                exit 1
+                ;;
+              2) ;;
+              *)
+                echo "::error::Could not check whether v$VERSION already exists (git ls-remote exited $rc)."
+                exit 1
+                ;;
+            esac
+          fi
+          echo "TAG=v$VERSION" >> "$GITHUB_ENV"
+          node -e '
+            const fs = require("fs");
+            const p = "crates/app/tauri.conf.json";
+            const c = JSON.parse(fs.readFileSync(p, "utf8"));
+            c.version = process.argv[1];
+            fs.writeFileSync(p, JSON.stringify(c, null, 2) + "\n");
+          ' "$VERSION"
+          sed -i -E "0,/^version = \".*\"/s//version = \"$VERSION\"/" Cargo.toml
+          grep -m1 '^version' Cargo.toml
+          grep '"version"' crates/app/tauri.conf.json
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -42,9 +109,19 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         with:
           projectPath: crates/app
-          tagName: ${{ github.ref_name }}
-          releaseName: SnapRSS ${{ github.ref_name }}
+          tagName: ${{ env.TAG }}
+          releaseName: SnapRSS ${{ env.TAG }}
           releaseBody: See the commit log for what changed.
-          releaseDraft: false
+          # Created as a draft and published only once every file is up.
+          # Published straight away, it became the "latest" release before
+          # latest.json was uploaded, and every update check in those minutes
+          # failed with "could not fetch a valid release JSON".
+          releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
+
+      - name: Publish the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$TAG" --draft=false --latest --repo "${GITHUB_REPOSITORY}"
