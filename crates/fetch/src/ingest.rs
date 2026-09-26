@@ -412,8 +412,20 @@ pub fn ingest(
             summary.as_deref(),
         )?;
 
+        let author = entry.authors.iter().find_map(author_name);
+
         if let Some(id) = existing {
             report.duplicates += 1;
+            // Articles stored while every RSS author read "author" (and
+            // cleared to nothing since) get their real one back. Not counted
+            // as an edit: nothing the reader wrote changed.
+            if author.is_some() {
+                tx.execute(
+                    "UPDATE news SET author_name = ?1
+                     WHERE id = ?2 AND deleted <> 2 AND (author_name IS NULL OR author_name = 'author')",
+                    params![author, id],
+                )?;
+            }
             if rules.apply_edits {
                 // Only rewrite if something actually differs, so read/starred
                 // state and the row's position are left alone in the common
@@ -448,7 +460,6 @@ pub fn ingest(
             continue;
         }
 
-        let author = entry.authors.first().map(|a| a.name.clone());
         let categories = if entry.categories.is_empty() {
             None
         } else {
@@ -545,4 +556,33 @@ pub fn ingest(
     // the whole time.
     db.recompute_counters_for(&[feed_id])?;
     Ok(report)
+}
+
+/// The name to show for an author.
+///
+/// feed-rs reads RSS's `<author>`, which the RSS spec makes an e-mail address
+/// ("jo@site.test (Jo Bloggs)"), into a person named "author" with the
+/// element's text as the address. Taken as it came, the byline of every
+/// article from such a feed read "author". Most feeds put a plain name there.
+fn author_name(p: &feed_rs::model::Person) -> Option<String> {
+    let name = p.name.trim();
+    let raw = match p.email.as_deref().map(str::trim) {
+        Some(raw) if name == "author" => raw,
+        _ => return (!name.is_empty()).then(|| name.to_string()),
+    };
+    // "jo@site.test (Jo Bloggs)"
+    if let (Some(open), true) = (raw.find('('), raw.ends_with(')')) {
+        let inner = raw[open + 1..raw.len() - 1].trim();
+        if !inner.is_empty() {
+            return Some(inner.to_string());
+        }
+    }
+    // "Jo Bloggs <jo@site.test>"
+    if let Some(lt) = raw.find('<') {
+        let before = raw[..lt].trim().trim_matches('"').trim();
+        if !before.is_empty() {
+            return Some(before.to_string());
+        }
+    }
+    (!raw.is_empty()).then(|| raw.to_string())
 }

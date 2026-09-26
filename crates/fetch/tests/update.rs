@@ -1164,3 +1164,33 @@ fn a_feed_id_reused_while_its_fetch_was_in_flight_gets_nothing() {
     assert_eq!((s.attempted, rows(&db)), (0, 0), "{s:?}");
     assert_eq!((text.as_str(), etag), ("same.test", None));
 }
+
+#[test]
+fn rss_authors_are_stored_by_name_not_as_the_word_author() {
+    const RSS: &str = r#"<?xml version="1.0"?>
+<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/"><channel><title>T</title><link>https://a.test/</link>
+<item><title>Plain</title><link>https://a.test/1</link><guid>1</guid><author><![CDATA[Marko R]]></author></item>
+<item><title>Spec</title><link>https://a.test/2</link><guid>2</guid><author>jo@a.test (Jo Bloggs)</author></item>
+<item><title>Angle</title><link>https://a.test/3</link><guid>3</guid><author>"Ann Lee" &lt;ann@a.test&gt;</author></item>
+<item><title>Bare</title><link>https://a.test/4</link><guid>4</guid><author>sam@a.test</author></item>
+<item><title>Creator</title><link>https://a.test/5</link><guid>5</guid><dc:creator>Dee Cee</dc:creator></item>
+</channel></rss>"#;
+    let (mut db, id) = db_with_feed("https://a.test/feed");
+    let parsed = feed_rs::parser::parse(RSS.as_bytes()).unwrap();
+    ingest(&mut db, id, &parsed, &IngestRules::default()).unwrap();
+    let author = |db: &Db, t: &str| -> Option<String> {
+        db.conn().query_row("SELECT author_name FROM news WHERE title = ?1", [t], |r| r.get(0)).unwrap()
+    };
+    assert_eq!(author(&db, "Plain").as_deref(), Some("Marko R"));
+    assert_eq!(author(&db, "Spec").as_deref(), Some("Jo Bloggs"));
+    assert_eq!(author(&db, "Angle").as_deref(), Some("Ann Lee"));
+    assert_eq!(author(&db, "Bare").as_deref(), Some("sam@a.test"));
+    assert_eq!(author(&db, "Creator").as_deref(), Some("Dee Cee"));
+
+    // One stored while the bug was there gets its name on the next update,
+    // without counting as an edit.
+    db.conn().execute("UPDATE news SET author_name = 'author' WHERE title = 'Plain'", []).unwrap();
+    let report = ingest(&mut db, id, &parsed, &IngestRules::default()).unwrap();
+    assert_eq!(author(&db, "Plain").as_deref(), Some("Marko R"));
+    assert_eq!((report.inserted, report.updated), (0, 0));
+}

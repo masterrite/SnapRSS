@@ -1897,6 +1897,16 @@ console.log("\nbugs found in review");
   await fire("article-ready", { id: 10, ok: false });
   await tick();
   ok(!doc.querySelector(".pendingchip"), "a failed full-article fetch removes 'fetching full article…'");
+
+  // Once the full article is in, it is no longer the feed's summary.
+  item(12).click();
+  await tick(40);
+  $("#article .kicker").insertAdjacentHTML("beforeend",
+    '<span class="chip summarychip">summary only</span><span class="chip pendingchip">fetching full article…</span>');
+  await fire("article-ready", { id: 12, ok: true });
+  await tick(40);
+  ok(!doc.querySelector(".pendingchip") && !doc.querySelector(".summarychip"),
+     "when the full article arrives, 'summary only' goes too");
 }
 
 console.log("\nempty deleted from the folder");

@@ -1163,7 +1163,7 @@ async function openArticle(id, { keepSelection = false } = {}) {
       <span class="src">${esc(a.feed_title)}</span>
       <span class="faint">·</span>
       <span class="when">${a.published ? new Date(a.published).toLocaleString() : ""}</span>
-      ${a.from_feed ? '<span class="chip">summary only</span>' : ""}
+      ${a.from_feed ? '<span class="chip summarychip">summary only</span>' : ""}
     </div>
     <h1 class="headline">${esc(a.title)}</h1>
     <div class="byline">${a.byline ? esc(a.byline) + " · " : ""}${a.read_minutes} min read</div>
@@ -4033,7 +4033,9 @@ listen("article-ready", async (e) => {
         link.onclick = (ev) => { ev.preventDefault(); openUrl(link.href); };
       });
     }
+    // The full article is what is showing now, not the feed's summary.
     $(".pendingchip")?.remove();
+    $(".summarychip")?.remove();
     if (document.documentElement.dataset.layout === "newspaper") redrawRows([id]);
   } catch { /* the summary stays */ }
 });

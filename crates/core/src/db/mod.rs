@@ -57,6 +57,38 @@ impl Db {
         // than as a version step for the same reason as the column above; it
         // touches a few hundred rows at most and nothing once they are fixed.
         conn.execute("UPDATE feeds SET status = '' WHERE TRIM(status) = '0'", [])?;
+        // Webtoon episodes were extracted as the page's list of every
+        // episode, with thumbnails that never load, and the panels missed.
+        // Their cached copies are dropped once so they are extracted again.
+        // A settings key rather than a version step, for the reason above.
+        // Every RSS <author> was stored as the word "author". Cleared once;
+        // articles still in their feed get the real name on the next update.
+        let author_done = conn
+            .query_row("SELECT 1 FROM settings WHERE key = 'repair.rss_author'", [], |_| Ok(()))
+            .is_ok();
+        if !author_done {
+            conn.execute("UPDATE news SET author_name = NULL WHERE author_name = 'author'", [])?;
+            conn.execute(
+                "INSERT INTO settings(key, value) VALUES('repair.rss_author', '1')
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [],
+            )?;
+        }
+        let webtoon_done = conn
+            .query_row("SELECT 1 FROM settings WHERE key = 'repair.webtoon_extract'", [], |_| Ok(()))
+            .is_ok();
+        if !webtoon_done {
+            conn.execute(
+                "UPDATE news SET article_html = NULL, article_fetched = NULL
+                 WHERE article_html IS NOT NULL AND link_href LIKE '%webtoons.com/%'",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO settings(key, value) VALUES('repair.webtoon_extract', '1')
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [],
+            )?;
+        }
 
         let found: i64 = conn
             .query_row(

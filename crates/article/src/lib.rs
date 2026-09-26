@@ -184,7 +184,7 @@ pub fn resolve_lazy_images(html: &str) -> String {
         sel.select("img")
             .iter()
             .flat_map(|el| {
-                ["src", "data-src", "data-original", "data-lazy-src"]
+                ["src", "data-src", "data-original", "data-lazy-src", "data-url"]
                     .iter()
                     .filter_map(|a| el.attr(a).map(|v| v.trim().to_string()))
                     .filter(|v| !v.is_empty())
@@ -298,7 +298,9 @@ fn html_attr_escape(s: &str) -> String {
 fn lazy_src(el: &dom_query::Selection<'_>) -> Option<String> {
     // The first one that is set to something: `data-src=""` beside a real
     // `data-original` is common.
-    ["data-src", "data-original", "data-lazy-src", "data-actualsrc", "file"]
+    // `data-url` is Webtoon's: every comic panel is a blank until its script
+    // copies that in.
+    ["data-src", "data-original", "data-lazy-src", "data-actualsrc", "data-url", "file"]
         .iter()
         .filter_map(|a| el.attr(a).map(|v| v.trim().to_string()))
         .find(|v| !v.is_empty() && !v.starts_with("data:"))
@@ -312,7 +314,8 @@ fn is_placeholder(src: &str) -> bool {
     let file = s.rsplit('/').next().unwrap_or(&s);
     s.is_empty()
         || s.starts_with("data:")
-        || ["placeholder", "blank.", "spacer.", "loading", "lazy", "pixel.", "transparent.", "1x1"]
+        // "transparen" covers transparent.gif and Webtoon's bg_transparency.png.
+        || ["placeholder", "blank.", "spacer.", "loading", "lazy", "pixel.", "transparen", "1x1"]
             .iter()
             .any(|w| file.contains(w))
         // Discuz and others: a named stand-in GIF.
@@ -356,6 +359,9 @@ pub fn read_minutes(text: &str) -> u32 {
 /// Full pipeline for a fetched page.
 pub fn extract(html: &str, url: &str) -> Result<Article, ArticleError> {
     let base = url::Url::parse(url).ok();
+    if let Some(article) = base.as_ref().and_then(|u| webtoon_episode(html, u)) {
+        return Ok(article);
+    }
     let prepared = resolve_lazy_images(html);
 
     let mut readability = dom_smoothie::Readability::new(prepared.as_str(), Some(url), None)
@@ -379,6 +385,61 @@ pub fn extract(html: &str, url: &str) -> Result<Article, ArticleError> {
         title: Some(parsed.title.to_string()).filter(|t| !t.trim().is_empty()),
         byline: parsed.byline.map(|b| b.to_string()),
         site_name: parsed.site_name.map(|s| s.to_string()),
+    })
+}
+
+/// A Webtoon episode: its comic panels and the creator's note.
+///
+/// The page is pictures with almost no text, and readability, which looks
+/// for text, picked the list of every episode's thumbnail instead. The panels
+/// are blanks until the page's script copies each `data-url` in, and on
+/// webtoon-phinf.pstatic.net they are refused to any request not sent from
+/// webtoons.com. swebtoon-phinf.pstatic.net, the host Webtoon's own feeds use
+/// for the same pictures, serves them to anyone.
+fn webtoon_episode(html: &str, url: &url::Url) -> Option<Article> {
+    let host = url.host_str()?;
+    if host != "webtoons.com" && !host.ends_with(".webtoons.com") {
+        return None;
+    }
+    let doc = Document::from(html);
+    let panels: Vec<String> = doc
+        .select("#_imageList img")
+        .iter()
+        .filter_map(|img| {
+            let current = img.attr("src").map(|s| s.to_string()).unwrap_or_default();
+            let src = if is_placeholder(&current) { lazy_src(&img)? } else { current };
+            let mut u = url.join(src.trim()).ok()?;
+            if u.host_str() == Some("webtoon-phinf.pstatic.net") {
+                u.set_host(Some("swebtoon-phinf.pstatic.net")).ok()?;
+            }
+            Some(u.to_string())
+        })
+        .collect();
+    if panels.is_empty() {
+        return None;
+    }
+    let note = doc.select("._creatorNoteText").text().trim().to_string();
+    let mut body: String = panels
+        .iter()
+        .map(|src| format!("<img src=\"{}\" alt=\"\">", html_attr_escape(src)))
+        .collect();
+    body = format!("<p>{body}</p>");
+    if !note.is_empty() {
+        body.push_str(&format!("<p>{}</p>", html_attr_escape(&note)));
+    }
+    let title = doc
+        .select("h1.subj_episode")
+        .attr("title")
+        .map(|t| t.to_string())
+        .or_else(|| Some(doc.select("title").text().trim().to_string()))
+        .filter(|t| !t.is_empty());
+    Some(Article {
+        html: sanitiser(Some(url)).clean(&body).to_string(),
+        read_minutes: 1,
+        text: note,
+        title,
+        byline: None,
+        site_name: Some("WEBTOON".to_string()),
     })
 }
 

@@ -394,3 +394,51 @@ fn icon_links_honour_base_href_like_feed_links() {
         ["https://site.test/blog/fav.png"]
     );
 }
+
+/// A Webtoon episode page as it arrives: panels are blanks with the real
+/// address in `data-url`, beside a long list of every episode's thumbnail.
+const WEBTOON_EPISODE: &str = r#"<!doctype html><html><head><title>Nerd and Jock - Ep 348 | WEBTOON</title></head><body>
+<div class="subj_info"><a class="subj">Nerd and Jock</a><h1 class="subj_episode" title="Nerd and Jock Ep 348">Nerd and Jock Ep 348</h1></div>
+<div id="topEpisodeList"><ul>
+  <li><a href="/ep1"><img src="https://webtoon-phinf.pstatic.net/2017/thumb1.jpg?type=f160_151" alt="Nerd and Jock Ep 1"><span>Ep 1: a long enough episode title to look like text</span></a></li>
+  <li><a href="/ep2"><img src="https://webtoon-phinf.pstatic.net/2017/thumb2.jpg?type=f160_151" alt="Nerd and Jock Ep 2"><span>Ep 2: another long enough episode title to look like text</span></a></li>
+  <li><a href="/ep3"><img src="https://webtoon-phinf.pstatic.net/2017/thumb3.jpg?type=f160_151" alt="Nerd and Jock Ep 3"><span>Ep 3: yet another long enough episode title, with commas, to look like text</span></a></li>
+</ul></div>
+<div id="content" class="viewer"><div class="viewer_lst"><div class="viewer_img _img_viewer_area" id="_imageList">
+  <img src="https://webtoons-static.pstatic.net/image/bg_transparency.png" width="800" height="455.0" alt="image" class="_images" data-url="https://webtoon-phinf.pstatic.net/20260925_81/panel1_PNG/a.png?type=opti" ondragstart="return false;">
+  <img src="https://webtoons-static.pstatic.net/image/bg_transparency.png" width="800" height="800.0" alt="image" class="_images" data-url="https://webtoon-phinf.pstatic.net/20260925_262/panel2_JPEG/b.jpg?type=q90">
+</div></div></div>
+<div class="creator_note"><h2 class="title">Creator</h2><p class="author_text _creatorNoteText">Nerd and Jock playing football together!</p></div>
+</body></html>"#;
+
+#[test]
+fn a_webtoon_episode_is_its_panels_and_the_creators_note() {
+    let url = "https://www.webtoons.com/en/canvas/nerd-and-jock/nerd-and-jock-ep-348/viewer?title_no=135963&episode_no=348";
+    let a = extract(WEBTOON_EPISODE, url).unwrap();
+    let imgs: Vec<&str> = a.html.match_indices("<img").map(|(i, _)| &a.html[i..]).collect();
+    assert_eq!(imgs.len(), 2, "the two panels and not the episode thumbnails: {}", a.html);
+    // The host that serves them without webtoons.com as the referrer.
+    assert!(imgs[0].starts_with(r#"<img src="https://swebtoon-phinf.pstatic.net/20260925_81/panel1_PNG/a.png?type=opti""#), "{}", a.html);
+    assert!(imgs[1].starts_with(r#"<img src="https://swebtoon-phinf.pstatic.net/20260925_262/panel2_JPEG/b.jpg?type=q90""#), "{}", a.html);
+    assert!(!a.html.contains("bg_transparency") && !a.html.contains("thumb1"), "{}", a.html);
+    assert!(a.html.contains("Nerd and Jock playing football together!"));
+    assert_eq!(a.title.as_deref(), Some("Nerd and Jock Ep 348"));
+    // The feed's own preview image is the first panel: not shown twice.
+    let summary = r#"<img src="https://swebtoon-phinf.pstatic.net/20260925_81/panel1_PNG/a.png">"#;
+    assert_eq!(snaprss_article::keep_lead_image(&a.html, summary), a.html);
+}
+
+#[test]
+fn a_page_that_is_not_webtoon_is_not_read_as_one() {
+    // The same markup elsewhere goes through the ordinary extraction.
+    let a = extract(WEBTOON_EPISODE, "https://mirror.test/ep348");
+    assert!(a.map(|a| !a.html.contains("swebtoon-phinf")).unwrap_or(true));
+}
+
+#[test]
+fn data_url_and_a_transparency_png_are_a_lazy_image() {
+    let out = snaprss_article::resolve_lazy_images(
+        r#"<p><img src="https://static.test/image/bg_transparency.png" data-url="https://img.test/real.jpg"></p>"#,
+    );
+    assert!(out.contains(r#"src="https://img.test/real.jpg""#), "{out}");
+}
