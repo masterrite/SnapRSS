@@ -619,3 +619,42 @@ fn common_queries_use_indexes() {
         );
     }
 }
+
+/// Status posts have no guid, link or title; ingestion recognises them by
+/// their text alone. A stub without the text is a stranger, and the post came
+/// back new and unread on the next poll.
+#[test]
+fn purging_an_item_with_only_a_description_keeps_the_description() {
+    let (mut db, feed) = db_with(1);
+    db.conn()
+        .execute(
+            "INSERT INTO news(feed_id, description, published, received, read, deleted, delete_date)
+             VALUES(?1, 'Just a status update', ?2, ?2, 1, 1, ?2)",
+            rusqlite::params![feed, ts(30)],
+        )
+        .unwrap();
+    db.conn()
+        .execute("UPDATE news SET deleted = 1, delete_date = ?1, description = 'long body' WHERE guid = 'g0'", [ts(30)])
+        .unwrap();
+    cleanup::purge_deleted(&mut db, None).unwrap();
+
+    // The query ingestion uses for an entry with nothing but text.
+    let hit: i64 = db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM news WHERE feed_id = ?1
+               AND IFNULL(link_href, '') = '' AND IFNULL(title, '') = ''
+               AND description = ?2 AND IFNULL(published, '') = IFNULL(?3, '')
+               AND deleted = 2",
+            rusqlite::params![feed, "Just a status update", ts(30)],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(hit, 1, "the stub is still recognisable");
+    // An article with a title is still identified by it; its body goes.
+    let body: Option<String> = db
+        .conn()
+        .query_row("SELECT description FROM news WHERE guid = 'g0'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(body, None);
+}

@@ -37,7 +37,26 @@ impl Db {
 
     fn init(conn: Connection) -> Result<Self, DbError> {
         conn.pragma_update(None, "foreign_keys", "ON")?;
+        // Lower case for every script. SQLite's own LIKE and NOCASE fold only
+        // A to Z, so a search for "новости" missed "Новости". Used in queries
+        // only, never in the schema, so the file stays readable without it.
+        conn.create_scalar_function(
+            "snap_lower",
+            1,
+            rusqlite::functions::FunctionFlags::SQLITE_UTF8 | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
+            |ctx| Ok(ctx.get::<Option<String>>(0)?.map(|s| s.to_lowercase())),
+        )?;
         conn.execute_batch(SCHEMA)?;
+        // Columns added after a table first shipped. Added in place rather
+        // than by bumping the schema version, so an older SnapRSS can still
+        // open the file: it ignores a column it does not know.
+        add_column_if_missing(&conn, "feeds", "icon_checked", "TEXT")?;
+        // QuiteRSS writes status 0 for a feed that updated fine, and imports
+        // copied it, so every imported feed showed a warning. Success here is
+        // an empty status, as an update writes it. Run on every open rather
+        // than as a version step for the same reason as the column above; it
+        // touches a few hundred rows at most and nothing once they are fixed.
+        conn.execute("UPDATE feeds SET status = '' WHERE TRIM(status) = '0'", [])?;
 
         let found: i64 = conn
             .query_row(
@@ -249,4 +268,16 @@ pub(crate) fn repair_imported_values(conn: &Connection) -> Result<(), rusqlite::
                  ELSE update_interval_type END;
          UPDATE feeds SET update_interval_enable = 0 WHERE update_interval_enable < 0;",
     )
+}
+
+fn add_column_if_missing(conn: &Connection, table: &str, column: &str, ty: &str) -> Result<(), DbError> {
+    let exists = conn
+        .prepare(&format!("PRAGMA table_info({table})"))?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .filter_map(Result::ok)
+        .any(|c| c == column);
+    if !exists {
+        conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {ty}"))?;
+    }
+    Ok(())
 }

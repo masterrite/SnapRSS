@@ -110,13 +110,34 @@ fn bench() {
 
     tauri::async_runtime::block_on(async {
         time("feed_tree", commands::feed_tree(st())).await.unwrap();
-        time("counts", commands::counts(st())).await.unwrap();
+        time("counts", commands::read_counts(&st())).await.unwrap();
         for scope in ["unread", "all", "starred", "feed:7", "folder:10003", "label:1", "deleted"] {
-            time(&format!("news_list {scope}"), commands::news_list(st(), scope.into(), Some(500), Some(false)))
+            time(&format!("news_list {scope}"), commands::news_list(st(), scope.into(), Some(500), None, Some(false), None, None))
                 .await
                 .unwrap();
         }
-        time("news_list all (newspaper excerpts)", commands::news_list(st(), "all".into(), Some(500), Some(true)))
+        time("news_list all (newspaper excerpts)", commands::news_list(st(), "all".into(), Some(500), None, Some(true), None, None))
+            .await
+            .unwrap();
+        time("news_list all, page at 200,000", commands::news_list(st(), "all".into(), Some(500), Some(200_000), Some(false), None, None))
+            .await
+            .unwrap();
+        time("news_list all, search \"feed 77\"", commands::news_list(st(), "all".into(), Some(500), None, Some(false), Some("feed 77".into()), None))
+            .await
+            .unwrap();
+        time("news_list all, search that matches nothing", commands::news_list(st(), "all".into(), Some(500), None, Some(false), Some("zzzqqq".into()), None))
+            .await
+            .unwrap();
+        time("news_list all, search новости (matches nothing)", commands::news_list(st(), "all".into(), Some(500), None, Some(false), Some("новости".into()), None))
+            .await
+            .unwrap();
+        time("news_list all, search 标题 (every article)", commands::news_list(st(), "all".into(), Some(500), None, Some(false), Some("标题".into()), None))
+            .await
+            .unwrap();
+        time("news_list all, sorted by title", commands::news_list(st(), "all".into(), Some(500), None, Some(false), None, Some("title".into())))
+            .await
+            .unwrap();
+        time("news_list feed:7, sorted by title", commands::news_list(st(), "feed:7".into(), Some(500), None, Some(false), None, Some("title".into())))
             .await
             .unwrap();
         let first: i64 = {
@@ -153,6 +174,7 @@ fn bench() {
                         xml_url: format!("https://f{feed}.test/rss"),
                         etag: None,
                         last_modified: None,
+                        credentials: None,
                     },
                     result: Ok(snaprss_fetch::FetchOutcome::Body {
                         bytes: xml.into_bytes(),

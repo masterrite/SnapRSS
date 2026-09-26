@@ -361,3 +361,36 @@ fn named_placeholder_files_and_empty_lazy_attributes() {
 fn title_entities() {
     assert_eq!(snaprss_article::decode_entities("AT&amp;T &nbsp;news &#8212; ok &bogus;"), "AT&T  news — ok &bogus;");
 }
+
+#[test]
+fn a_data_link_split_by_a_tab_or_newline_is_still_refused() {
+    for href in [
+        "da&#x09;ta:text/html,<script>alert(1)</script>",
+        "da&#x0A;ta:text/html,x",
+        "d&#x0D;ata:text/html,x",
+        "&#x01; data:text/html,x",
+        "&#100;ata:text/html,x",
+        " DATA:text/html,x",
+        "java&#x09;script:alert(1)",
+        "  JaVaScRiPt:alert(1)",
+    ] {
+        let out = sanitise_feed_html(&format!(r#"<a href="{href}">x</a>"#), Some("https://f.test/post/1"));
+        assert!(!out.contains("href"), "{href} -> {out}");
+    }
+    let out = sanitise_feed_html(r#"<a href="/rel">x</a><a href="mailto:a@f.test">m</a>"#, Some("https://f.test/post/1"));
+    assert!(out.contains(r#"href="https://f.test/rel""#) && out.contains("mailto:a@f.test"), "{out}");
+}
+
+#[test]
+fn icon_links_honour_base_href_like_feed_links() {
+    let html = r#"<html><head><base href="https://cdn.test/assets/">
+        <link rel="icon" href="fav.png">
+        <link rel="alternate" type="application/rss+xml" href="feed.xml"></head></html>"#;
+    assert_eq!(snaprss_article::icon_links(html, "https://site.test/blog/"), ["https://cdn.test/assets/fav.png"]);
+    assert_eq!(snaprss_article::feed_links(html, "https://site.test/blog/")[0].url, "https://cdn.test/assets/feed.xml");
+    // Without one, the page's own address.
+    assert_eq!(
+        snaprss_article::icon_links(r#"<link rel="icon" href="fav.png">"#, "https://site.test/blog/"),
+        ["https://site.test/blog/fav.png"]
+    );
+}

@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS feeds (
     xml_url                 TEXT,              -- the feed itself
     html_url                TEXT,              -- the site
     language                TEXT,
-    image                   BLOB,              -- favicon
+    image                   BLOB,              -- favicon, base64 as QuiteRSS stores it
+    icon_checked            TEXT,              -- when an icon was last looked for
 
     -- counters, denormalised on purpose: the tree redraws constantly
     unread                  INTEGER NOT NULL DEFAULT 0,

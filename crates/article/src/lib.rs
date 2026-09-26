@@ -135,8 +135,20 @@ fn sanitiser(base: Option<&url::Url>) -> Builder<'_> {
         .link_rel(Some("noopener noreferrer nofollow"))
         // `data:` is allowed for inline images, which many feeds use, but not
         // for links: a data URL link is a whole document of its choosing.
+        //
+        // Compared as a browser reads the address: it drops tabs and line
+        // breaks anywhere in it, and spaces and control characters around
+        // it, so "da&#x09;ta:" is a data URL too.
         .attribute_filter(|element, attribute, value| {
-            if element == "a" && attribute == "href" && value.trim_start().to_ascii_lowercase().starts_with("data:") {
+            let scheme = || -> String {
+                value
+                    .trim_matches(|c: char| c <= ' ')
+                    .chars()
+                    .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+                    .take(5)
+                    .collect()
+            };
+            if element == "a" && attribute == "href" && scheme().eq_ignore_ascii_case("data:") {
                 None
             } else {
                 Some(value.into())
@@ -586,4 +598,107 @@ pub fn text_to_html(s: &str) -> String {
         .map(|p| format!("<p>{}</p>", p.trim().replace('\n', "<br>")))
         .collect::<Vec<_>>()
         .join("")
+}
+
+/// A feed a web page advertises.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FeedLink {
+    pub url: String,
+    pub title: Option<String>,
+}
+
+/// The feeds a page names in `<link rel="alternate">`: RSS, Atom and JSON
+/// Feed, resolved against `base`, in page order, without repeats. How
+/// browsers and QuiteRSS find a site's feed from its address.
+pub fn feed_links(html: &str, base: &str) -> Vec<FeedLink> {
+    let doc = Document::from(html);
+    let base_url = document_base(&doc, base);
+    let mut out: Vec<FeedLink> = Vec::new();
+    for link in doc.select("link[href]").iter() {
+        let rel = link.attr("rel").map(|r| r.to_ascii_lowercase()).unwrap_or_default();
+        if !rel.split_whitespace().any(|r| r == "alternate" || r == "feed") {
+            continue;
+        }
+        let ty = link.attr("type").map(|t| t.to_ascii_lowercase()).unwrap_or_default();
+        let is_feed = ty.contains("rss") || ty.contains("atom") || ty.contains("feed+json")
+            || (ty.is_empty() && rel.split_whitespace().any(|r| r == "feed"));
+        if !is_feed {
+            continue;
+        }
+        let Some(href) = link.attr("href").map(|h| h.trim().to_string()).filter(|h| !h.is_empty()) else {
+            continue;
+        };
+        let resolved = match &base_url {
+            Some(b) => b.join(&href).map(|u| u.to_string()).ok(),
+            None => url::Url::parse(&href).map(|u| u.to_string()).ok(),
+        };
+        let Some(url) = resolved.filter(|u| u.starts_with("http://") || u.starts_with("https://")) else {
+            continue;
+        };
+        if out.iter().any(|f| f.url == url) {
+            continue;
+        }
+        let title = link.attr("title").map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+        out.push(FeedLink { url, title });
+    }
+    out
+}
+
+/// What relative links in `doc` resolve against: `base`, the page's address,
+/// unless a `<base href>` changes it.
+fn document_base(doc: &Document, base: &str) -> Option<url::Url> {
+    let base_url = url::Url::parse(base).ok();
+    doc.select("base[href]")
+        .attr("href")
+        .and_then(|h| match &base_url {
+            Some(b) => b.join(&h).ok(),
+            None => url::Url::parse(&h).ok(),
+        })
+        .or(base_url)
+}
+
+/// The icons a page names, best first: `rel="icon"` (small PNG, ICO or SVG
+/// preferred over large or unsized ones), then `apple-touch-icon`. Resolved
+/// against `base`, or the page's `<base href>` as [`feed_links`] does: an icon
+/// resolved against the page alone pointed somewhere else and was not found.
+pub fn icon_links(html: &str, base: &str) -> Vec<String> {
+    let doc = Document::from(html);
+    let Some(base_url) = document_base(&doc, base) else { return Vec::new() };
+    let mut scored: Vec<(i32, usize, String)> = Vec::new();
+    for (i, link) in doc.select("link[href]").iter().enumerate() {
+        let rel = link.attr("rel").map(|r| r.to_ascii_lowercase()).unwrap_or_default();
+        let rels: Vec<&str> = rel.split_whitespace().collect();
+        let touch = rels.iter().any(|r| r.starts_with("apple-touch-icon"));
+        if !rels.contains(&"icon") && !touch {
+            continue;
+        }
+        let Some(href) = link.attr("href").map(|h| h.trim().to_string()).filter(|h| !h.is_empty()) else {
+            continue;
+        };
+        let Ok(u) = base_url.join(&href) else { continue };
+        if !matches!(u.scheme(), "http" | "https") {
+            continue;
+        }
+        // Smaller is better up to 32px; unsized comes after sized-small.
+        let size = link
+            .attr("sizes")
+            .and_then(|s| s.split(['x', 'X']).next().and_then(|n| n.trim().parse::<i32>().ok()));
+        let mut score = match size {
+            Some(n) if (16..=64).contains(&n) => (n - 32).abs() / 16,
+            None => 3,
+            Some(n) => 5 + n / 64,
+        };
+        if touch {
+            score += 20;
+        }
+        scored.push((score, i, u.to_string()));
+    }
+    scored.sort();
+    let mut out: Vec<String> = Vec::new();
+    for (_, _, u) in scored {
+        if !out.contains(&u) {
+            out.push(u);
+        }
+    }
+    out
 }

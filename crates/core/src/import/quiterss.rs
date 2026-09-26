@@ -75,10 +75,34 @@ fn blob<I: rusqlite::RowIndex>(r: &rusqlite::Row<'_>, col: I) -> rusqlite::Resul
     })
 }
 
-/// QuiteRSS writes timestamps as `2026-09-16T10:00:00`, UTC without a zone.
+/// QuiteRSS writes `published` as `2026-09-16T10:00:00`, UTC without a zone.
 /// Ingestion writes `2026-09-16T10:00:00Z`; unless the two agree, no
 /// date-based identity rule can match an imported article.
 fn utc(v: Option<String>) -> Option<String> {
+    zoneless_as(v, |n| n.and_utc())
+}
+
+/// `received` and `deleteDate` are different: QuiteRSS writes them from
+/// `QDateTime::currentDateTime()`, local time without a zone. Read as UTC
+/// they were off by the user's UTC offset.
+fn local_as_utc(v: Option<String>) -> Option<String> {
+    use chrono::TimeZone;
+    zoneless_as(v, |n| {
+        // In the hour clocks go back a time happens twice; either is close
+        // enough. One that never happened (clocks going forward) falls back
+        // to UTC rather than being dropped.
+        chrono::Local
+            .from_local_datetime(&n)
+            .earliest()
+            .map(|d| d.with_timezone(&chrono::Utc))
+            .unwrap_or_else(|| n.and_utc())
+    })
+}
+
+fn zoneless_as(
+    v: Option<String>,
+    zone: impl Fn(chrono::NaiveDateTime) -> chrono::DateTime<chrono::Utc>,
+) -> Option<String> {
     let v = v?;
     let t = v.trim();
     if let Ok(d) = chrono::DateTime::parse_from_rfc3339(t) {
@@ -88,7 +112,7 @@ fn utc(v: Option<String>) -> Option<String> {
         );
     }
     if let Ok(n) = chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%dT%H:%M:%S") {
-        return Some(n.and_utc().to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+        return Some(zone(n).to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
     }
     Some(v)
 }
@@ -159,10 +183,11 @@ pub fn import_quiterss(db: &mut Db, source: impl AsRef<Path>) -> Result<ImportRe
     let fc = Columns::load(&src, "feeds")?;
 
     // What was here before, so importing the same file twice is a no-op
-    // rather than a second copy of everything.
+    // rather than a second copy of everything. Trimmed, because earlier
+    // imports stored URLs as written, stray spaces included.
     let existing_urls: HashMap<String, i64> = {
         let mut stmt = tx.prepare("SELECT xml_url, id FROM feeds WHERE kind = 1 AND xml_url IS NOT NULL")?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?.trim().to_string(), r.get::<_, i64>(1)?)))?;
         rows.collect::<Result<_, _>>()?
     };
     let pre_max_id: i64 = tx.query_row("SELECT COALESCE(MAX(id), 0) FROM feeds", [], |r| r.get(0))?;
@@ -172,7 +197,10 @@ pub fn import_quiterss(db: &mut Db, source: impl AsRef<Path>) -> Result<ImportRe
         [],
         |r| r.get(0),
     )?;
-    let mut already_subscribed: std::collections::HashSet<i64> = Default::default();
+    // Old id -> the feed already here with the same URL. Kept apart from
+    // `id_map` so the tree repairs below never touch the user's own feeds;
+    // only filters, which name feeds by id, need it.
+    let mut already_subscribed: HashMap<i64, i64> = HashMap::new();
 
     let sql = format!(
         "SELECT id, parentId, rowToParent, text, title, description, xmlUrl, htmlUrl,
@@ -211,16 +239,15 @@ pub fn import_quiterss(db: &mut Db, source: impl AsRef<Path>) -> Result<ImportRe
         while let Some(r) = rows.next()? {
             let old_id: i64 = r.get("id")?;
             let old_parent: i64 = int(r, "parentId")?.unwrap_or(0);
-            let xml_url: Option<String> = text(r, "xmlUrl")?;
+            // Stored trimmed, so the duplicate check on the next import
+            // compares like with like.
+            let xml_url: Option<String> = text(r, "xmlUrl")?.map(|u| u.trim().to_string());
 
-            let is_feed = xml_url
-                .as_deref()
-                .map(|s| !s.trim().is_empty())
-                .unwrap_or(false);
+            let is_feed = xml_url.as_deref().is_some_and(|s| !s.is_empty());
             let kind = if is_feed { 1i64 } else { 0i64 };
 
-            if is_feed && xml_url.as_deref().is_some_and(|u| existing_urls.contains_key(u.trim())) {
-                already_subscribed.insert(old_id);
+            if let Some(&existing) = xml_url.as_deref().and_then(|u| existing_urls.get(u)).filter(|_| is_feed) {
+                already_subscribed.insert(old_id, existing);
                 report.duplicates += 1;
                 continue;
             }
@@ -329,7 +356,9 @@ pub fn import_quiterss(db: &mut Db, source: impl AsRef<Path>) -> Result<ImportRe
                     int(r, "avoidedOldSingleNewsDateOn")?
                         .unwrap_or(0),
                     text(r, "avoidedOldSingleNewsDate")?,
-                    text(r, "status")?,
+                    // QuiteRSS writes 0 for "updated fine"; SnapRSS writes
+                    // an empty status, and anything else shows as broken.
+                    text(r, "status")?.map(|s| if s.trim() == "0" { String::new() } else { s }),
                     int(r, "authentication")?.unwrap_or(0),
                     int(r, "showNotification")?.unwrap_or(0),
                     text(r, "created")?,
@@ -382,34 +411,44 @@ pub fn import_quiterss(db: &mut Db, source: impl AsRef<Path>) -> Result<ImportRe
     }
 
     // A parent chain that loops (1 -> 2 -> 1, from a hand-edited file) hangs
-    // off nothing and would never be shown. Put such nodes at the root.
-    let new_ids: Vec<i64> = id_map.values().copied().collect();
+    // off nothing and would never be shown. Put the nodes that make up the
+    // loop at the root. Only those: a feed inside folder 1 is fine once 1 is
+    // back at the root, and moving it too depended on which node the walk
+    // happened to start from. All loops are found before anything moves, and
+    // moved in id order, so the result does not depend on hash order.
+    let mut new_ids: Vec<i64> = id_map.values().copied().collect();
+    new_ids.sort_unstable();
+    let imported: std::collections::HashSet<i64> = new_ids.iter().copied().collect();
+    let mut in_loop = std::collections::BTreeSet::new();
     for &id in &new_ids {
-        let mut seen = std::collections::HashSet::new();
+        let mut path: Vec<i64> = Vec::new();
         let mut cur = Some(id);
-        let mut looped = false;
         while let Some(c) = cur {
-            if !seen.insert(c) {
-                looped = true;
+            if in_loop.contains(&c) {
                 break;
             }
+            if let Some(at) = path.iter().position(|&p| p == c) {
+                in_loop.extend(path[at..].iter().copied().filter(|n| imported.contains(n)));
+                break;
+            }
+            path.push(c);
             cur = tx
                 .query_row("SELECT parent_id FROM feeds WHERE id = ?1", [c], |r| r.get(0))
                 .optional()?
                 .flatten();
         }
-        if looped {
-            let next: i64 = tx.query_row(
-                "SELECT COALESCE(MAX(row_to_parent), -1) + 1 FROM feeds WHERE parent_id IS NULL",
-                [],
-                |r| r.get(0),
-            )?;
-            tx.execute(
-                "UPDATE feeds SET parent_id = NULL, row_to_parent = ?1 WHERE id = ?2",
-                params![next, id],
-            )?;
-            report.skipped.push(format!("feed {id}: its folders form a loop, moved to root"));
-        }
+    }
+    for id in in_loop {
+        let next: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(row_to_parent), -1) + 1 FROM feeds WHERE parent_id IS NULL",
+            [],
+            |r| r.get(0),
+        )?;
+        tx.execute(
+            "UPDATE feeds SET parent_id = NULL, row_to_parent = ?1 WHERE id = ?2",
+            params![next, id],
+        )?;
+        report.skipped.push(format!("feed {id}: its folders form a loop, moved to root"));
     }
 
     // An imported folder with the same name and place as one already here is
@@ -470,7 +509,7 @@ pub fn import_quiterss(db: &mut Db, source: impl AsRef<Path>) -> Result<ImportRe
         let mut rows = stmt.query([])?;
         while let Some(r) = rows.next()? {
             let old_feed: i64 = int(r, "feedId")?.unwrap_or(0);
-            if already_subscribed.contains(&old_feed) {
+            if already_subscribed.contains_key(&old_feed) {
                 continue;
             }
             let Some(&feed_id) = id_map.get(&old_feed) else {
@@ -486,7 +525,7 @@ pub fn import_quiterss(db: &mut Db, source: impl AsRef<Path>) -> Result<ImportRe
                 None => 1,
             };
 
-            let received: String = utc(text(r, "received")?)
+            let received: String = local_as_utc(text(r, "received")?)
                 .or(utc(text(r, "published")?))
                 .unwrap_or_else(|| "1970-01-01T00:00:00Z".to_string());
 
@@ -533,7 +572,7 @@ pub fn import_quiterss(db: &mut Db, source: impl AsRef<Path>) -> Result<ImportRe
                     int(r, "read")?.unwrap_or(0).clamp(0, 1),
                     int(r, "starred")?.unwrap_or(0),
                     int(r, "deleted")?.unwrap_or(0),
-                    text(r, "deleteDate")?,
+                    local_as_utc(text(r, "deleteDate")?),
                 ],
             )?;
             let news_id = tx.last_insert_rowid();
@@ -577,11 +616,14 @@ pub fn import_quiterss(db: &mut Db, source: impl AsRef<Path>) -> Result<ImportRe
                 // A list that remaps to nothing stays an (empty) list rather
                 // than becoming NULL: a filter whose feeds all vanished should
                 // apply to no feed, not to all of them.
+                //
+                // A feed that was already subscribed was not imported, but it
+                // is still one the filter means, so it maps to the copy here.
                 let feeds = text(r, 3)?.map(|s| {
                     let ids: Vec<i64> = s
                         .split([',', '\t'])
                         .filter_map(|p| p.trim().parse::<i64>().ok())
-                        .filter_map(|old| id_map.get(&old).copied())
+                        .filter_map(|old| id_map.get(&old).or(already_subscribed.get(&old)).copied())
                         .collect();
                     crate::filters::format_feed_list(&ids)
                 });

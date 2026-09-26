@@ -6,7 +6,9 @@
 pub mod cleanup;
 pub mod db;
 pub mod filters;
+pub mod icons;
 pub mod import;
 pub mod models;
+pub mod passwords;
 
 pub use db::{Db, DbError};

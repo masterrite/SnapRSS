@@ -347,3 +347,48 @@ fn sniffing_goes_by_the_root_element() {
     let (_d2, opml_file) = tmp("subs.opml", &body);
     assert_eq!(identify(&opml_file), SourceKind::Opml);
 }
+
+// ---------------------------------------------------------------------------
+// found in second review
+// ---------------------------------------------------------------------------
+
+#[test]
+fn outlines_nested_under_a_feed_follow_it_in_order() {
+    let xml = r#"<opml version="2.0"><body>
+        <outline text="X" xmlUrl="https://x.test/f">
+            <outline text="A1" xmlUrl="https://a1.test/f"/>
+            <outline text="A2" xmlUrl="https://a2.test/f"/>
+        </outline>
+        <outline text="Y" xmlUrl="https://y.test/f"/>
+        <outline text="B" xmlUrl="https://b.test/f"/>
+    </body></opml>"#;
+    let mut db = Db::open_in_memory().unwrap();
+    opml::import_str(&mut db, xml).unwrap();
+    let roots: Vec<_> = db.children(None).unwrap().into_iter().filter_map(|n| n.text).collect();
+    assert_eq!(roots, ["X", "A1", "A2", "Y", "B"]);
+    let rows: Vec<i64> = db.children(None).unwrap().into_iter().map(|n| n.row_to_parent).collect();
+    assert_eq!(rows, [0, 1, 2, 3, 4], "no two share a position");
+}
+
+#[test]
+fn opml_feed_urls_are_trimmed_when_stored_and_compared() {
+    let mut db = Db::open_in_memory().unwrap();
+    db.conn()
+        .execute(
+            "INSERT INTO feeds(kind, text, xml_url) VALUES(1, 'Existing', 'https://pre.test/f.xml ')",
+            [],
+        )
+        .unwrap();
+    let xml = r#"<opml version="2.0"><body>
+        <outline text="Existing again" type="rss" xmlUrl="https://pre.test/f.xml"/>
+        <outline text="Spaced" type="rss" xmlUrl="  https://new.test/f.xml "/>
+        <outline text="Spaced again" type="rss" xmlUrl="https://new.test/f.xml"/>
+    </body></opml>"#;
+    let r = opml::import_str(&mut db, xml).unwrap();
+    assert_eq!((r.feeds, r.duplicates), (1, 2));
+    let url: String = db
+        .conn()
+        .query_row("SELECT xml_url FROM feeds WHERE text = 'Spaced'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(url, "https://new.test/f.xml");
+}

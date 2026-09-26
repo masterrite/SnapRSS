@@ -70,10 +70,31 @@ async function invoke(cmd, args) {
   calls.push([cmd, args]);
   switch (cmd) {
     case "feed_tree": return structuredClone(TREE);
-    case "counts": return { unread: 3, total: 9, starred: 1 };
+    case "feed_icons": return structuredClone(icons.value);
+    case "refresh_feed_icon": return false;
+    case "counts": return { ...countsNow.value };
     case "news_list":
       if (delay.news_list[args.scope]) await sleep(delay.news_list[args.scope]);
-      return structuredClone(ITEMS).map((i) => ({ ...i, title: delay.news_list[args.scope] ? `${args.scope} ${i.title}` : i.title }));
+      // "scope@offset" delays one page, so a later page can land first.
+      if (delay.news_list[`${args.scope}@${args.offset}`]) await sleep(delay.news_list[`${args.scope}@${args.offset}`]);
+    {
+      // Like the backend: every search word must appear in the title,
+      // author or feed name; sorted; then the requested page.
+      let rows = args.scope === "label:77" || (args.scope === "unread" && bigUnread.value)
+        ? Array.from({ length: bigRows.value }, (_, n) => ({ ...structuredClone(ITEMS[0]), id: 5000 + n,
+            title: `Old post ${n}`, published: new Date(BIG_T0 - n * 3600e3).toISOString(), labels: [] }))
+        : structuredClone(ITEMS).map((i) => ({ ...i, title: delay.news_list[args.scope] ? `${args.scope} ${i.title}` : i.title }));
+      const words = (args.query || "").toLowerCase().split(/\s+/).filter(Boolean);
+      rows = rows.filter((i) => words.every((w) =>
+        [i.title, i.author || "", i.feed_title || ""].some((f) => f.toLowerCase().includes(w))));
+      const sort = args.sort || "-date";
+      const key = sort.replace(/^-/, "");
+      const get = (i) => key === "title" ? i.title.toLowerCase() : key === "author" ? (i.author || "")
+        : key === "feed" ? (i.feed_title || "") : i.published;
+      rows.sort((a, b) => (get(a) < get(b) ? -1 : get(a) > get(b) ? 1 : 0) * (sort.startsWith("-") ? -1 : 1));
+      const off = args.offset || 0;
+      return rows.slice(off, off + (args.limit || 500));
+    }
     case "article":
       if (delay.article[args.id]) await sleep(delay.article[args.id]);
       if (fail.article.has(args.id)) throw "boom";
@@ -89,6 +110,19 @@ async function invoke(cmd, args) {
     case "rename_node": case "remove_feed":
     case "set_reading_mode": return null;
     case "add_feed": return 42;
+    // Like the backend: a feed address is itself; a site lists its feeds.
+    case "discover_feed": {
+      const a = args.address;
+      if (a.includes("none.test")) return [];
+      if (a.includes("locked.test")) throw "could not open https://locked.test/rss: http 401: this feed needs a user name and password";
+      if (a.includes("down.test")) throw "could not open https://down.test/: network: connection refused";
+      if (a.includes("multi.test")) return [
+        { url: "https://multi.test/posts.xml", title: "Posts", subscribed: true },
+        { url: "https://multi.test/comments.xml", title: "Comments", subscribed: false },
+      ];
+      if (a.includes("kn.test")) return [{ url: "https://kn.test/feed.xml", title: "Kernel Notes", subscribed: true }];
+      return [{ url: a.includes("://") ? a : `https://${a}`, title: null, subscribed: false }];
+    }
     case "add_folder": return 43;
     case "update_all": if (delay.update_all) await sleep(delay.update_all); return { attempted: 2, not_modified: 1, ingested: 1, failed: 0, new_articles: 5 };
     case "update_feed_now": return { attempted: 1, not_modified: 0, ingested: 1, failed: 0, new_articles: 2 };
@@ -123,6 +157,7 @@ async function invoke(cmd, args) {
       maxToKeepEnable: false, maxToKeep: null, maxAgeEnable: false, maxAgeDays: null,
       deleteRead: false, neverDeleteUnread: true, neverDeleteStarred: true,
       neverDeleteLabeled: true, status: "", updated: null, articleCount: 40,
+      ...feedSignIn.value,
     };
     case "save_feed_settings": return null;
     case "check_update": if (upd.error) throw upd.error; return upd.result;
@@ -144,8 +179,10 @@ async function invoke(cmd, args) {
         news: ["contains", "not_contains", "regex"],
       },
       statuses: ["new", "read", "starred"],
-      actions: ["mark_read", "add_star", "delete", "add_label"],
+      actions: ["mark_read", "add_star", "delete", "add_label", "play_sound", "notify"],
     };
+    case "test_sound": return null;
+    case "read_sound": return new Uint8Array([82, 73, 70, 70]).buffer;
     case "save_filter": return 3;
     case "delete_filter": case "set_filter_enabled": case "reorder_filter": return null;
     case "apply_filters_now": return {
@@ -354,6 +391,13 @@ const fire = (name, payload) =>
 const opened = [];
 const picked = { value: "C:\\Users\\billy\\test.opml" };
 const saved = { value: "C:\\Users\\billy\\snaprss.opml" };
+const feedSignIn = { value: {} };
+const bigUnread = { value: false };
+const bigRows = { value: 1234 };
+// Fixed, so the same article comes back the same from one request to the next.
+const BIG_T0 = Date.now();
+const countsNow = { value: { unread: 3, total: 9, starred: 1 } };
+const icons = { value: { 2: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==" } };
 const closed = [];
 const hidden = [];
 window.__TAURI__ = {
@@ -380,9 +424,11 @@ window.structuredClone = structuredClone;
 
 // The page links app.js; jsdom will not fetch it, so evaluate it by hand the
 // same way a module script would be evaluated.
+// The trailing line gives tests a way to read the app's own `state`, which an
+// indirect eval keeps out of the global scope.
 const js = readFileSync(join(UI, "app.js"), "utf8");
 try {
-  window.eval(js);
+  window.eval(js + "\n;window.__appEval = (s) => eval(s);");
 } catch (e) {
   console.log(` FAIL  app.js threw on load: ${e.message}`);
   process.exit(1);
@@ -467,6 +513,57 @@ ok(calls.some(([c, a]) => c === "add_feed" && a.url === "https://example.test/fe
    "add_feed invoked with the typed url");
 ok(calls.some(([c]) => c === "update_feed_now"), "first fetch triggered after adding");
 ok(!$(".modal-back"), "modal closed");
+
+console.log("\nadd feed from a site address");
+{
+  // A site with several feeds offers a choice; the one already subscribed
+  // cannot be picked.
+  click("#btn-addfeed"); await tick();
+  $(".modal-input").value = "multi.test";
+  click("[data-ok]"); await tick(60);
+  ok(calls.some(([c, a]) => c === "discover_feed" && a.address === "multi.test"), "the address is looked up first");
+  const choices = [...doc.querySelectorAll(".modal-back [data-choice]")];
+  ok(choices.length === 2 && choices[0].disabled && !choices[1].disabled,
+     "several feeds are offered, the subscribed one greyed out");
+  let n = calls.length;
+  choices[1].click(); await tick(60);
+  ok(calls.slice(n).some(([c, a]) => c === "add_feed" && a.url === "https://multi.test/comments.xml"), "the chosen feed is added");
+
+  click("#btn-addfeed"); await tick();
+  $(".modal-input").value = "none.test";
+  n = calls.length;
+  click("[data-ok]"); await tick(60);
+  ok($("#toast").textContent.includes("No feed found") && !calls.slice(n).some(([c]) => c === "add_feed"),
+     "a site without a feed says so and adds nothing");
+
+  click("#btn-addfeed"); await tick();
+  $(".modal-input").value = "kn.test";
+  n = calls.length;
+  click("[data-ok]"); await tick(60);
+  ok($("#toast").textContent.includes("already subscribed") && !calls.slice(n).some(([c]) => c === "add_feed"),
+     "an address already subscribed says so");
+}
+
+console.log("\nadd feed when the address cannot be checked");
+{
+  click("#btn-addfeed"); await tick();
+  $(".modal-input").value = "locked.test/rss";
+  let n = calls.length;
+  click("[data-ok]"); await tick(120);
+  ok(calls.slice(n).some(([c, a]) => c === "add_feed" && a.url === "https://locked.test/rss"),
+     "a feed that asks for a password is still added");
+  ok(!!doc.querySelector(".sheet #f-user"), "and its properties open at the sign-in");
+  closeSheetIfOpen();
+
+  click("#btn-addfeed"); await tick();
+  $(".modal-input").value = "down.test";
+  n = calls.length;
+  click("[data-ok]"); await tick(60);
+  ok(doc.querySelector(".modal-back .modal-title")?.textContent.includes("Add it anyway"),
+     "a server that cannot be reached asks before adding");
+  click(".modal-back [data-ok]"); await tick(80);
+  ok(calls.slice(n).some(([c, a]) => c === "add_feed" && a.url === "https://down.test"), "and adds it when told to");
+}
 
 console.log("\nmodal can be cancelled");
 click("#btn-addfolder");
@@ -698,11 +795,11 @@ ok(calls.filter(([c]) => c === "set_starred").length >= 2, "s starred");
 console.log("\nsearch filter");
 $("#q").value = "Second";
 $("#q").dispatchEvent(new window.Event("input"));
-await tick();
+await tick(320);
 ok(doc.querySelectorAll("#list .item").length === 1, "search narrowed the list to 1");
 $("#q").value = "";
 $("#q").dispatchEvent(new window.Event("input"));
-await tick();
+await tick(320);
 ok(doc.querySelectorAll("#list .item").length === 4, "clearing search restored the list");
 
 console.log("\nbroken feed indicator");
@@ -845,6 +942,33 @@ console.log("\nfeed properties");
   const saved2 = calls.slice(n).find(([c]) => c === "save_feed_settings");
   ok(!!saved2, "saving writes the feed settings");
   ok(saved2[1].s.maxToKeepEnable === true, "the toggled per-feed rule is sent");
+  ok(saved2[1].s.signInUser === "" && saved2[1].s.signInPassword === null,
+     "no sign-in typed: none is sent, and no password");
+  closeSheetIfOpen();
+
+  // Sign-in: a user name and password go to the backend; a blank password
+  // later keeps the saved one.
+  feedSignIn.value = { signInUser: "ann", hasPassword: true };
+  await window.eval("openFeedSettings(2)");
+  await tick(80);
+  ok(doc.querySelector("#f-user").value === "ann", "the saved user name is shown");
+  ok(doc.querySelector("#f-pass").value === "" && doc.querySelector("#f-pass").placeholder.includes("Saved"),
+     "the saved password is not sent to the page, only that there is one");
+  let m = calls.length;
+  doc.querySelector("[data-save]").click();
+  await tick(60);
+  let sv = calls.slice(m).find(([c]) => c === "save_feed_settings");
+  ok(sv[1].s.signInUser === "ann" && sv[1].s.signInPassword === null, "a blank password keeps the saved one");
+  closeSheetIfOpen();
+  await window.eval("openFeedSettings(2)");
+  await tick(80);
+  doc.querySelector("#f-pass").value = "s3cret";
+  m = calls.length;
+  doc.querySelector("[data-save]").click();
+  await tick(60);
+  sv = calls.slice(m).find(([c]) => c === "save_feed_settings");
+  ok(sv[1].s.signInPassword === "s3cret", "a typed password is saved");
+  feedSignIn.value = {};
   closeSheetIfOpen();
 }
 
@@ -1270,7 +1394,7 @@ console.log("\ncolours are applied through the CSSOM");
      "the chip carries its colour as data, not as a style attribute");
   ok(chip.style.background !== "", `the colour was applied (${chip.style.background})`);
 
-  const avatar = doc.querySelector(".item .favicon");
+  const avatar = doc.querySelector("span.favicon");
   ok(avatar.dataset.bg?.startsWith("hsl("), "feed avatars are tinted the same way");
   ok(avatar.style.background !== "", "and that tint is applied");
   // Space-separated hsl() is CSS Color 4 and older WebKitGTK drops the whole
@@ -1662,7 +1786,7 @@ console.log("\nbugs found in review");
   // Search, then Ctrl+A and j: only what the search left visible.
   $("#q").value = "Fourth";
   $("#q").dispatchEvent(new window.Event("input"));
-  await tick();
+  await tick(320);
   doc.dispatchEvent(new window.KeyboardEvent("keydown", { key: "a", ctrlKey: true, bubbles: true }));
   await tick();
   let n0 = calls.length;
@@ -1673,7 +1797,7 @@ console.log("\nbugs found in review");
      `Ctrl+A then Delete with a search acts only on the visible rows (${d0 && JSON.stringify(d0[1].ids)})`);
   $("#q").value = "ir";   // First, Third; not Second or Fourth
   $("#q").dispatchEvent(new window.Event("input"));
-  await tick();
+  await tick(320);
   item(10).click();
   await tick(40);
   let n = calls.length;
@@ -1683,7 +1807,7 @@ console.log("\nbugs found in review");
   ok(opened1 === 12, `j skips articles the search hides (opened ${opened1})`);
   $("#q").value = "";
   $("#q").dispatchEvent(new window.Event("input"));
-  await tick();
+  await tick(320);
 
   // Two quick clicks: the slow first reply must not replace the second.
   delay.article[12] = 120;
@@ -1864,7 +1988,7 @@ console.log("\nsecond review");
   // "Mark above as read" leaves out rows the search hides.
   $("#q").value = "Fourth";
   $("#q").dispatchEvent(new window.Event("input"));
-  await tick();
+  await tick(320);
   window.eval('applyTrayBehaviour({ "reading.mark_read_on_open": "0" })');
   doc.querySelector('#list .item[data-id="13"]').click();
   await tick(40);
@@ -1878,7 +2002,7 @@ console.log("\nsecond review");
   window.eval('applyTrayBehaviour({ "reading.mark_read_on_open": "1" })');
   $("#q").value = "";
   $("#q").dispatchEvent(new window.Event("input"));
-  await tick();
+  await tick(320);
 
   // Renaming the feed being shown renames the list header too.
   const kn = [...tree().querySelectorAll(".node[data-id]")].find((x) => x.dataset.label === "Kernel Notes");
@@ -1901,6 +2025,44 @@ console.log("\nsecond review");
   ok(sel && sel.value === "keep", `a multi-feed filter shows as its feeds, not every feed (${sel && sel.value})`);
   doc.querySelector(".modal-back").click();
   await fp;
+
+  // Sound and notification actions.
+  {
+    picked.value = "C:\\Sounds\\ding.wav";
+    const fp2 = window.eval('editFilter({ id: 6, name: "loud", mode: 1, enabled: true, feeds: null, conditions: [{ field: "title", op: "contains", content: "x" }], actions: [{ action: "mark_read", params: null }] }, [])');
+    await tick(60);
+    const box = doc.querySelector(".modal-back");
+    const af = box.querySelector('[data-af="0"]');
+    ok([...af.options].some((o) => o.textContent === "Play a sound")
+       && [...af.options].some((o) => o.textContent === "Show a notification"),
+       "the filter editor offers a sound and a notification");
+    af.value = "play_sound"; af.dispatchEvent(new window.Event("change")); await tick(20);
+    // Saving without a file refuses.
+    box.querySelector("[data-ok]").click(); await tick(20);
+    ok(!!doc.querySelector(".modal-back") && $("#toast").textContent.includes("sound file"),
+       "a sound action needs a file");
+    box.querySelector("[data-abrowse]") || null;
+    doc.querySelector(".modal-back [data-abrowse]").click(); await tick(40);
+    ok(doc.querySelector('.modal-back [data-av="0"]').value === "C:\\Sounds\\ding.wav", "Browse fills in the chosen file");
+    let n = calls.length;
+    doc.querySelector(".modal-back [data-aplay]").click(); await tick(20);
+    ok(calls.slice(n).some(([c, a]) => c === "test_sound" && a.path === "C:\\Sounds\\ding.wav"), "the play button plays it");
+    doc.querySelector(".modal-back [data-aadd]").click(); await tick(20);
+    const af2 = doc.querySelector('.modal-back [data-af="1"]');
+    af2.value = "notify"; af2.dispatchEvent(new window.Event("change")); await tick(20);
+    doc.querySelector(".modal-back [data-ok]").click();
+    const d2 = await fp2;
+    ok(d2 && JSON.stringify(d2.actions) === JSON.stringify([
+      { action: "play_sound", params: "C:\\Sounds\\ding.wav" }, { action: "notify", params: null }]),
+      `both actions are saved (${d2 && JSON.stringify(d2.actions)})`);
+    picked.value = null;
+
+    // A sound the app hands to the page is read and played.
+    n = calls.length;
+    await fire("play-sound", "/home/me/ding.ogg");
+    await tick(30);
+    ok(calls.slice(n).some(([c, a]) => c === "read_sound" && a.path === "/home/me/ding.ogg"), "a sound event reads the file to play it");
+  }
 
   // Newspaper: a failed load says so on the card.
   window.eval('setLayout("newspaper")');
@@ -1996,6 +2158,515 @@ console.log("\nupdates");
   ok(doc.querySelector('.sheet [data-num="updates.repo"]'), "an unusable repository opens the Updates page");
   upd.error = null;
   closeSheetIfOpen();
+}
+
+console.log("\ntext size and shortcuts");
+{
+  closeSheetIfOpen();
+  const key = (k, o = {}) => doc.dispatchEvent(new window.KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true, ...o }));
+  const scale = () => doc.documentElement.style.getPropertyValue("--text-scale");
+  window.localStorage.removeItem("textScale");
+  await window.eval("textReset()");
+  key("=", { ctrlKey: true }); await tick(10);
+  ok(scale() === "1.1", `Ctrl + makes the article text larger (${scale()})`);
+  key("+", { ctrlKey: true, shiftKey: true }); await tick(10);
+  ok(scale() === "1.2", "so does Ctrl and the + key itself");
+  key("-", { ctrlKey: true }); await tick(10);
+  ok(scale() === "1.1", "Ctrl - makes it smaller");
+  key("0", { ctrlKey: true }); await tick(10);
+  ok(scale() === "1" && window.localStorage.getItem("textScale") === "1", "Ctrl 0 resets it, and it is remembered");
+  $("#article").dispatchEvent(new window.WheelEvent("wheel", { deltaY: -100, ctrlKey: true, bubbles: true, cancelable: true }));
+  ok(scale() === "1.1", "Ctrl + wheel over the article works too");
+  await window.eval("textReset()");
+
+  // Rebinding: Star moves from S to G.
+  await window.eval('openSettings("shortcuts")'); await tick(80);
+  const starBtn = doc.querySelector('[data-rebind="star"]');
+  ok(starBtn?.textContent.trim() === "S", "the Shortcuts page shows the current key");
+  starBtn.click(); await tick(10);
+  ok(starBtn.textContent.includes("Press a key"), "clicking it waits for a key");
+  key("Shift"); await tick(10);
+  ok(!!doc.querySelector('[data-rebind="star"][aria-pressed="true"]'), "a modifier on its own is not a key");
+  key("g"); await tick(60);
+  ok(doc.querySelector('[data-rebind="star"]').textContent.trim() === "G", "the new key is shown");
+  ok(!!doc.querySelector(".sheet"), "and pressing it did not close Settings or act on the list");
+  ok(JSON.parse(window.localStorage.getItem("keymap")).star === "G", "and stored, only the change");
+  // Taking a key another action has moves it.
+  doc.querySelector('[data-rebind="toggleRead"]').click(); await tick(10);
+  key("g"); await tick(60);
+  ok(doc.querySelector('[data-rebind="star"]').textContent.includes("none"), "a key taken by another action leaves the first");
+  ok($("#toast").textContent.includes("moved from"), "and says so");
+  // Esc while waiting cancels without closing Settings.
+  doc.querySelector('[data-rebind="star"]').click(); await tick(10);
+  key("Escape"); await tick(60);
+  ok(!!doc.querySelector(".sheet") && doc.querySelector('[data-rebind="star"]').textContent.includes("none"),
+     "Esc cancels the change and leaves Settings open");
+  doc.querySelector('[data-rebind="star"]').click(); await tick(10);
+  key("x"); await tick(60);
+  closeSheetIfOpen();
+  ok(($('#readbar [data-cmd="star"], #btn-star2')?.title || "").includes("(X)"), "tooltips follow the new key");
+
+  // The new key works, the old one no longer does.
+  click('#tree .node[data-id="2"]'); await tick(80);
+  click('.item[data-id="10"]'); await tick(80);
+  let n = calls.length;
+  key("s"); await tick(40);
+  ok(!calls.slice(n).some(([c]) => c === "set_starred"), "the old key does nothing");
+  key("x"); await tick(40);
+  ok(calls.slice(n).some(([c]) => c === "set_starred"), "the new key stars");
+  key("x"); await tick(40);
+  // Reset all puts the defaults back.
+  await window.eval('openSettings("shortcuts")'); await tick(80);
+  doc.querySelector("[data-keyresetall]").click(); await tick(60);
+  ok(!window.localStorage.getItem("keymap") && doc.querySelector('[data-rebind="star"]').textContent.trim() === "S",
+     "Reset all restores every default");
+  closeSheetIfOpen();
+  // A key recorded while Settings closes does not keep swallowing keys.
+  await window.eval('openSettings("shortcuts")'); await tick(80);
+  doc.querySelector('[data-rebind="star"]').click(); await tick(10);
+  closeSheetIfOpen();
+  n = calls.length;
+  key("s"); await tick(40);
+  ok(calls.slice(n).some(([c]) => c === "set_starred"), "closing Settings mid-change leaves the keyboard working");
+  key("s"); await tick(40);
+}
+
+console.log("\nstartup window and About");
+{
+  const wr = calls.findIndex(([c]) => c === "window_ready");
+  const ft = calls.findIndex(([c]) => c === "feed_tree");
+  ok(wr > ft && ft >= 0, "the window is shown after the content has loaded, not before");
+  await window.eval('openSettings("about")'); await tick(80);
+  ok(!doc.querySelector(".sheet").textContent.includes("Imports QuiteRSS"), "About no longer says what it imports");
+  closeSheetIfOpen();
+}
+
+console.log("\ntray count setting");
+{
+  await window.eval('openSettings("general")'); await tick(80);
+  const t = doc.querySelector('[data-sw="tray.show_unread"]');
+  ok(t && t.getAttribute("aria-checked") === "true", "the tray count is on by default and can be switched off");
+  t.click();
+  const n = calls.length;
+  doc.querySelector(".sheet [data-save]").click(); await tick(80);
+  const saved = calls.slice(n).find(([c]) => c === "set_settings");
+  ok(saved && saved[1].values["tray.show_unread"] === "0", "switching it off is saved");
+  ok(calls.slice(n).some(([c]) => c === "counts"), "and the tray is brought up to date straight away");
+}
+
+console.log("\nsite icons");
+{
+  ok($('#tree .node[data-id="2"] img.favicon')?.getAttribute("src").startsWith("data:image/png"),
+     "a feed with an icon shows it in the tree");
+  ok(!!$('#tree .node[data-id="3"] span.favicon'), "a feed without one keeps its letter");
+  click('#tree .node[data-id="2"]'); await tick(80);
+  ok(!!$('#list .item[data-id="10"] img.favicon.tiny'), "and on its articles in the list");
+  icons.value = { 2: icons.value[2], 3: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==" };
+  await fire("icons-updated", null); await tick(60);
+  ok(!!$('#tree .node[data-id="3"] img.favicon'), "a newly found icon appears without a restart");
+  icons.value = { 2: icons.value[2] };
+  await fire("icons-updated", null); await tick(60);
+  ok(calls.some(([c, a]) => c === "refresh_feed_icon" && a.id === 42), "adding a feed looks up its icon");
+}
+
+console.log("\nolder articles, search and sorting");
+{
+  closeSheetIfOpen();
+  $("#q").value = ""; $("#q").dispatchEvent(new window.Event("input")); await tick(320);
+  await window.eval('selectScope("label:77", "Many")');
+  await tick(60);
+  ok(doc.querySelectorAll("#list .item").length === 500, "a long list loads one page first");
+  ok(!!doc.querySelector("#list .more"), "and says there is more");
+  let n = calls.length;
+  await window.eval("loadMore()");
+  await tick(40);
+  const page2 = calls.slice(n).find(([c]) => c === "news_list");
+  ok(page2 && page2[1].offset > 0, "scrolling on asks for the next page");
+  ok(doc.querySelectorAll("#list .item").length === 1000, "and adds it without duplicates");
+  await window.eval("loadMore()"); await tick(40);
+  ok(doc.querySelectorAll("#list .item").length === 1234 && !doc.querySelector("#list .more"),
+     "every article is reachable, and the end says so by stopping");
+  const ids = [...doc.querySelectorAll("#list .item")].map((e) => e.dataset.id);
+  ok(new Set(ids).size === ids.length, "no article appears twice");
+
+  // In Unread, articles read since loading have left the scope on the
+  // server: the next page starts after the rows still unread.
+  bigUnread.value = true;
+  await window.eval('selectScope("unread", "Unread")'); await tick(60);
+  const loaded = doc.querySelectorAll("#list .item").length;
+  for (const d of [...doc.querySelectorAll("#list [data-dot]")].slice(0, 3)) { d.click(); await tick(20); }
+  n = calls.length;
+  await window.eval("loadMore()"); await tick(40);
+  const up = calls.slice(n).find(([c]) => c === "news_list");
+  ok(loaded === 500 && up && up[1].offset === 500 - 3 - 50,
+     `in Unread the next page counts only rows still unread (${up && up[1].offset})`);
+  bigUnread.value = false;
+  await window.eval('selectScope("label:77", "Many")'); await tick(60);
+  await window.eval("loadMore()"); await tick(40);
+  await window.eval("loadMore()"); await tick(40);
+
+  // A reload of the same list keeps what was loaded.
+  n = calls.length;
+  await window.eval("loadList()"); await tick(40);
+  const re = calls.slice(n).find(([c]) => c === "news_list");
+  ok(re && re[1].limit >= 1234 && doc.querySelectorAll("#list .item").length === 1234,
+     "a refresh keeps every loaded row instead of dropping back to one page");
+
+  // Search goes to the database, over the whole scope.
+  n = calls.length;
+  $("#q").value = "Old post 1200"; $("#q").dispatchEvent(new window.Event("input"));
+  await tick(320);
+  const sq = calls.slice(n).find(([c]) => c === "news_list");
+  ok(sq && sq[1].query === "Old post 1200" && sq[1].scope === "label:77", "search is sent to the database for the scope");
+  ok(doc.querySelectorAll("#list .item").length === 1
+     && doc.querySelector("#list .item .t").textContent === "Old post 1200",
+     "and finds an article that was never loaded");
+  $("#q").value = ""; $("#q").dispatchEvent(new window.Event("input")); await tick(320);
+
+  // With nothing selected, a search looks everywhere.
+  await window.eval("clearScope()"); await tick(40);
+  ok(doc.querySelector("#list .empty")?.textContent.includes("Select a feed"), "no scope, no search: nothing listed");
+  n = calls.length;
+  $("#q").value = "Second"; $("#q").dispatchEvent(new window.Event("input")); await tick(320);
+  const sa = calls.slice(n).find(([c]) => c === "news_list");
+  ok(sa && sa[1].scope === "all", "no scope: the search covers every article");
+  $("#q").value = ""; $("#q").dispatchEvent(new window.Event("input")); await tick(320);
+
+  // Sorting from the column headings.
+  click('#tree .node[data-id="2"]'); await tick(80);
+  n = calls.length;
+  click('#listhead [data-sort="title"]'); await tick(60);
+  let so = calls.slice(n).find(([c]) => c === "news_list");
+  ok(so && so[1].sort === "title", "clicking TITLE sorts A to Z");
+  const titles = [...doc.querySelectorAll("#list .item .t")].map((e) => e.textContent);
+  ok(JSON.stringify(titles) === JSON.stringify([...titles].sort((a, b) => a.localeCompare(b))), "in that order");
+  ok(!doc.querySelector("#list .group"), "without day headings");
+  ok($('#listhead [data-sort="title"]').textContent.includes("▲"), "the heading shows the direction");
+  click('#listhead [data-sort="title"]'); await tick(60);
+  ok(window.localStorage.getItem("sort") === "-title", "a second click reverses, and is remembered");
+  click('#listhead [data-sort="date"]'); await tick(60);
+  ok(window.localStorage.getItem("sort") === "-date" && !!doc.querySelector("#list .group"),
+     "DATE goes back to newest first with day headings");
+  await window.eval('setSort("feed")'); await tick(60);
+  ok(JSON.stringify([...doc.querySelectorAll("#list .group")].map((g) => g.textContent))
+     === JSON.stringify(["COLD STORAGE", "KERNEL NOTES"]), "sorting by feed heads each feed's articles, A to Z");
+  await window.eval('setSort("-date")'); await tick(60);
+}
+
+console.log("\nthird review");
+{
+  closeSheetIfOpen();
+  const press = (k, o = {}, target = doc.body) => {
+    const e = new window.KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true, ...o });
+    target.dispatchEvent(e);
+    return e;
+  };
+  const pages = (from) => calls.slice(from).filter(([c]) => c === "news_list").map(([, a]) => a);
+  const st = (expr) => window.__appEval(expr);
+  const until = async (cond, ms = 8000) => { const t0 = Date.now(); while (!cond() && Date.now() - t0 < ms) await tick(20); };
+  window.eval('applyTrayBehaviour({ "reading.mark_read_on_open": "0" })');
+
+  // Enter on a focused Cancel is Cancel. The dialog took every Enter as OK,
+  // so tabbing to Cancel and pressing Enter removed the feed.
+  let n = calls.length;
+  const removing = window.eval(`removeNode(document.querySelector('#tree .node[data-id="3"]'))`);
+  await tick(10);
+  const cancel = $(".modal-back [data-cancel]");
+  cancel.focus();
+  const ent = press("Enter", {}, cancel);
+  await tick(20);
+  ok(!calls.slice(n).some(([c]) => c === "remove_feed") && !ent.defaultPrevented,
+     "Enter on a focused Cancel does not remove the feed");
+  cancel.click();
+  await removing;
+  const asking = window.eval('ask({ title: "Name it", value: "typed" })');
+  await tick(10);
+  press("Enter", {}, $(".modal-input"));
+  ok((await asking) === "typed", "Enter in a dialog's text field still means OK");
+  const confirming = window.eval('ask({ title: "Sure?", placeholder: null })');
+  await tick(10);
+  press("Enter", {}, doc.activeElement);
+  ok((await confirming) === true, "and so does Enter on its focused OK button");
+
+  // Scrolling while another feed loads used the old list's length as the new
+  // feed's offset: rows 0-499 then 950 onwards, with a gap between.
+  await window.eval('selectScope("label:77", "Many")');
+  delay.news_list["feed:2"] = 80;
+  n = calls.length;
+  const switching = window.eval('selectScope("feed:2", "Kernel Notes")');
+  await window.eval("loadMore()");
+  await switching;
+  await tick(100);
+  delete delay.news_list["feed:2"];
+  ok(!pages(n).some((a) => a.offset > 0) && doc.querySelectorAll("#list .item").length === 4,
+     `scrolling while a feed loads does not page it from the old list's length (${JSON.stringify(pages(n).map((a) => a.offset))})`);
+
+  // The same during the search box's pause: the new search's rows were
+  // appended to the old list.
+  await window.eval('selectScope("label:77", "Many")');
+  n = calls.length;
+  $("#q").value = "Old post 12";
+  $("#q").dispatchEvent(new window.Event("input"));
+  await window.eval("loadMore()");
+  ok(!pages(n).some((a) => a.offset > 0), "scrolling during the search pause does not add the search's rows to the old list");
+  await tick(320);
+  const found = [...doc.querySelectorAll("#list .item .t")].map((t) => t.textContent);
+  ok(found.length > 0 && found.every((t) => t.includes("12")),
+     `and the search then shows only its own rows (${found.length}: ${found.slice(0, 3)})`);
+  $("#q").value = "";
+  $("#q").dispatchEvent(new window.Event("input"));
+  await tick(320);
+
+  // A reply that lands after the scope changed is dropped.
+  delay.news_list["label:77@450"] = 80;
+  const paging = window.eval("loadMore()");
+  await tick(10);
+  await window.eval('selectScope("feed:2", "Kernel Notes")');
+  await paging;
+  delete delay.news_list["label:77@450"];
+  ok(doc.querySelectorAll("#list .item").length === 4, "a page that arrives after switching feeds is not appended");
+
+  // At 20000 rows the list stopped paging but kept saying "Loading more…".
+  // renderList draws every row and takes ~12 s for 20000 in jsdom, so it is
+  // switched off while the list is that long.
+  bigRows.value = 20600;
+  await window.eval('selectScope("label:77", "Many")');
+  st(`window.realRenderList = renderList; renderList = () => {};
+    state.items = Array.from({ length: 20000 }, (_, k) => ({ ...state.items[0], id: 5000 + k }));
+    state.more = true;`);
+  n = calls.length;
+  await window.eval("loadMore()");
+  const far = pages(n)[0];
+  ok(far && far.offset === 19950 && st("state.items.length") === 20500,
+     `past 20000 rows scrolling still loads older articles (${far && far.offset}, ${st("state.items.length")})`);
+  st("renderList = window.realRenderList");
+  bigRows.value = 1234;
+  await window.eval('selectScope("feed:2", "Kernel Notes")');
+
+  // J on the last loaded row loads the next page and goes on; the row is
+  // scrolled into view in the classic layout too.
+  const realScroll = window.Element.prototype.scrollIntoView;
+  const scrolled = [];
+  window.Element.prototype.scrollIntoView = function (o) { scrolled.push([this.dataset?.id, o?.block]); };
+  await window.eval('selectScope("label:77", "Many")');
+  await st("openArticle(state.items.at(-1).id)");
+  n = calls.length;
+  scrolled.length = 0;
+  press("j");
+  await until(() => st("state.selected") === 5500);
+  ok(pages(n).some((a) => a.offset > 0) && st("state.selected") === 5500,
+     `J on the last loaded row loads more and moves on (${st("state.selected")})`);
+  ok(doc.documentElement.dataset.layout !== "newspaper" && scrolled.some(([id, b]) => id === "5500" && b === "nearest"),
+     "and scrolls the row into view in the classic layout");
+  press("k");
+  await tick(20);
+  ok(scrolled.some(([id]) => id === "5499"), "K does too");
+  if (realScroll) window.Element.prototype.scrollIntoView = realScroll;
+  else delete window.Element.prototype.scrollIntoView;
+
+  // A new feed opens at its top.
+  $("#list").scrollTop = 4000;
+  await window.eval('selectScope("feed:2", "Kernel Notes")');
+  ok($("#list").scrollTop === 0, `a new feed opens scrolled to the top (${$("#list").scrollTop})`);
+
+  // Clicking a feed focuses its row. J then read an article, but Delete
+  // still went to the focused feed and asked to remove it.
+  const kn = doc.querySelector('#tree .node[data-id="2"]');
+  kn.focus();
+  kn.click();
+  await tick(60);
+  press("j", {}, kn);
+  await tick(40);
+  n = calls.length;
+  press("Delete", {}, doc.activeElement);
+  await tick(40);
+  ok(!$(".modal-back") && calls.slice(n).some(([c]) => c === "set_deleted"),
+     "after J from a clicked feed, Delete deletes the article, not the feed");
+  closeSheetIfOpen();
+  // A key the focused row handled itself is not also a shortcut.
+  window.eval('{ const m = keymap(); m.next = "Space"; saveKeymap(m); }');
+  await window.eval("openArticle(10)");
+  kn.focus();
+  n = calls.length;
+  press(" ", {}, kn);
+  await tick(60);
+  ok(pages(n).length === 1 && !calls.slice(n).some(([c]) => c === "article"),
+     "Space on a focused feed opens the feed and does not also go to the next article");
+  window.localStorage.removeItem("keymap");
+  window.eval("refreshKeyTips()");
+
+  // The reading pane's star kept its label and followed a changed shortcut.
+  window.eval('{ const m = keymap(); m.star = "F"; saveKeymap(m); }');
+  await window.eval("openArticle(10)");
+  const s2 = $("#btn-star2");
+  ok(!!s2.querySelector(".tlabel") && !!s2.querySelector("svg") && s2.title === "Star (F)",
+     `the reading pane star keeps its label and shortcut after an article opens (${s2.title})`);
+  await st("toggleStar({ onlyShown: true })");
+  window.eval("refreshKeyTips()");
+  ok(!!s2.querySelector(".tlabel") && s2.title === "Unstar (F)", `and once starred (${s2.title})`);
+  await st("toggleStar({ onlyShown: true })");
+  window.localStorage.removeItem("keymap");
+  window.eval("refreshKeyTips()");
+
+  // Shift+J and Shift+K with nothing open start at the end they head from.
+  st("state.selected = null; state.sel = new Set(); state.anchor = null; renderList()");
+  press("J", { shiftKey: true });
+  await tick(30);
+  ok(st("state.selected") === st("state.items[0].id"), "Shift+J with nothing open selects the first row");
+  st("state.selected = null; state.sel = new Set(); state.anchor = null; renderList()");
+  press("K", { shiftKey: true });
+  await tick(30);
+  ok(st("state.selected") === st("state.items.at(-1).id"), "Shift+K with nothing open selects the last row");
+
+  // A key given to another action wins over a built-in second key.
+  window.eval('{ const m = keymap(); m.textReset = "Ctrl++"; saveKeymap(m); }');
+  window.eval("setTextScale(1.5, { quiet: true })");
+  press("+", { ctrlKey: true, shiftKey: true });
+  ok(st("textScale()") === 1, `Ctrl++ bound to Normal text size resets it (${st("textScale()")})`);
+  window.localStorage.removeItem("keymap");
+  press("+", { ctrlKey: true, shiftKey: true });
+  ok(st("textScale()") > 1, "unbound, Ctrl++ still makes text larger");
+  window.eval("setTextScale(1, { quiet: true })");
+  window.eval("refreshKeyTips()");
+
+  // Esc in a Feed properties field closes it; in the search box it blurs.
+  await window.eval("openFeedSettings(2)");
+  await tick(40);
+  $("#f-name").focus();
+  press("Escape", {}, $("#f-name"));
+  await tick(20);
+  ok(!$(".sheet-back"), "Esc in a Feed properties field closes the sheet");
+  $("#q").focus();
+  press("Escape", {}, $("#q"));
+  ok(doc.activeElement !== $("#q"), "Esc in the search box still just leaves it");
+
+  // The status bar counts follow an update instead of waiting 15 s.
+  countsNow.value = { unread: 7, total: 12, starred: 1 };
+  click("#btn-update");
+  await tick(80);
+  ok($("#st-counts").textContent === "7 unread · 12 articles", `Update all refreshes the status bar (${$("#st-counts").textContent})`);
+  countsNow.value = { unread: 8, total: 13, starred: 1 };
+  await fire("feeds-updated", 1);
+  await tick(40);
+  ok($("#st-counts").textContent === "8 unread · 13 articles", "and so does a background update");
+  countsNow.value = { unread: 3, total: 9, starred: 1 };
+  window.eval('applyTrayBehaviour({ "reading.mark_read_on_open": "1" })');
+}
+
+console.log("\nlist drawing");
+{
+  closeSheetIfOpen();
+  const press = (k, o = {}, target = doc.body) => {
+    const e = new window.KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true, ...o });
+    target.dispatchEvent(e);
+    return e;
+  };
+  const st = (expr) => window.__appEval(expr);
+  const row = (id) => doc.querySelector(`#list .item[data-id="${id}"]`);
+  window.eval('applyTrayBehaviour({ "reading.mark_read_on_open": "0" })');
+  bigRows.value = 1234;
+  await window.eval('selectScope("label:77", "Many")');
+  await st("openArticle(5003)");
+  await tick(20);
+
+  // J redraws the two rows whose state changed and leaves every other row
+  // as it was. The whole list was rebuilt on each key.
+  const far = row(5010), first = row(5000);
+  press("j");
+  await tick(40);
+  ok(st("state.selected") === 5004 && row(5004).getAttribute("aria-selected") === "true"
+     && row(5003).getAttribute("aria-selected") === "false" && row(5004).dataset.sel === "true"
+     && row(5003).dataset.sel === "false",
+     "J moves the highlight and the selection to the next row");
+  ok(row(5010) === far && row(5000) === first, "and leaves the other rows alone");
+
+  // Starring from the row redraws that row only.
+  row(5010).querySelector("[data-star]").click();
+  await tick(40);
+  ok(row(5010) !== far && row(5010).querySelector("[data-star]").outerHTML !== far.querySelector("[data-star]").outerHTML
+     && row(5000) === first, "the star on a row redraws just that row");
+  row(5010).querySelector("[data-star]").click();
+  await tick(40);
+
+  // A click on a redrawn row still works: the list listens once, not per row.
+  row(5010).click();
+  await tick(40);
+  ok(st("state.selected") === 5010, "a redrawn row still opens on click");
+  row(5012).dispatchEvent(new window.MouseEvent("click", { bubbles: true, shiftKey: true }));
+  await tick(40);
+  ok(JSON.stringify([...doc.querySelectorAll('#list .item[data-sel="true"]')].map((n) => n.dataset.id))
+     === JSON.stringify(["5010", "5011", "5012"]), "and shift-click still selects the range");
+
+  // A new page is added below; the rows above are kept, and a heading that
+  // runs across the join is not drawn twice.
+  const loaded = st("state.items.length");
+  await st("loadMore()");
+  await tick(20);
+  const groups = [...doc.querySelectorAll("#list .group")].map((g) => g.textContent);
+  ok(st("state.items.length") > loaded && row(5000) === first
+     && doc.querySelectorAll("#list .item").length === st("state.items.length"),
+     `a page is added below without redrawing the rows above (${loaded} → ${st("state.items.length")})`);
+  ok(groups.every((g, i) => i === 0 || g !== groups[i - 1]), `and no heading repeats at the join (${groups})`);
+  ok(doc.querySelectorAll("#list .more").length === 1 && $("#list").lastElementChild.classList.contains("more"),
+     "with one “Loading more” row, at the end");
+  while (st("state.more")) await st("loadMore()");
+  ok(!$("#list .more") && doc.querySelectorAll("#list .item").length === 1234, "which goes once everything is loaded");
+  // Articles that arrive below the loaded ones (older dates, or sorted
+  // oldest first) can still be scrolled to after an update.
+  bigRows.value = 1300;
+  await fire("feeds-updated", 66);
+  await tick(60);
+  ok(!!$("#list .more") && st("state.more") && row(5000) === first, "an update that adds articles below brings back “Loading more”");
+  while (st("state.more")) await st("loadMore()");
+  ok(doc.querySelectorAll("#list .item").length === 1300, `and they can be scrolled to (${doc.querySelectorAll("#list .item").length})`);
+  bigRows.value = 1234;
+
+  // Deep in a long list a key touches the same few rows as at the top.
+  bigRows.value = 5000;
+  await window.eval('selectScope("label:77", "Many")');
+  while (st("state.more")) await st("loadMore()");
+  await st("openArticle(9000)");
+  await tick(20);
+  const top = row(5000), deep = row(9990);
+  for (let k = 0; k < 5; k++) { press("j"); await tick(0); }
+  await tick(40);
+  ok(st("state.selected") === 9005 && row(5000) === top && row(9990) === deep
+     && doc.querySelectorAll("#list .item").length === 5000,
+     `with 5000 rows loaded J redraws only the rows it changes (${st("state.selected")}, ${row(5000) === top}, ${row(9990) === deep}, ${doc.querySelectorAll("#list .item").length}, more ${st("state.more")})`);
+
+  // A background update that brings back the same articles redraws only the
+  // ones that changed. Every update rebuilt all 5000 rows.
+  countsNow.value = { unread: 3, total: 9, starred: 1 };
+  await fire("feeds-updated", 0);
+  await tick(60);
+  ok(row(5000) === top && row(9990) === deep, "an update that changes nothing leaves the rows alone");
+
+  // New site icons swap only the small icon in each row.
+  const icon = row(9990).querySelector(".m .favicon");
+  icons.value = { 2: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==", 3: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAB" };
+  await fire("icons-updated");
+  await tick(60);
+  ok(row(9990) === deep && row(9990).querySelector(".m .favicon") === icon,
+     "new icons for other feeds leave these rows as they were");
+  icons.value = { 2: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==" };
+  bigRows.value = 1234;
+
+  // Newspaper: the open card follows J, and the one left behind closes.
+  window.eval('setLayout("newspaper")');
+  await tick(60);
+  await st("openArticle(5001)");
+  await tick(40);
+  ok(!!row(5001).querySelector(".full, .ex") && !!row(5001).querySelector(".cardbar"), "a newspaper card opens");
+  press("j");
+  await tick(60);
+  ok(!row(5001).querySelector(".cardbar") && !!row(5002).querySelector(".cardbar"),
+     "J moves the open card to the next article and closes the last");
+  row(5002).querySelector("[data-collapse]").click();
+  await tick(20);
+  ok(!row(5002).querySelector(".cardbar") && st("state.selected") === null, "Collapse closes it");
+  window.eval('setLayout("classic")');
+  await tick(60);
+  window.eval('applyTrayBehaviour({ "reading.mark_read_on_open": "1" })');
 }
 
 console.log("\nno uncaught errors");

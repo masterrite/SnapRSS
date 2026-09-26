@@ -676,3 +676,209 @@ fn garbled_cached_articles_are_dropped_to_be_fetched_again() {
     assert_eq!(scalar::<Option<String>>(&db, "SELECT article_html FROM news WHERE title = 'bad'"), None);
     assert!(scalar::<Option<String>>(&db, "SELECT article_html FROM news WHERE title = 'good'").is_some());
 }
+
+// ---------------------------------------------------------------------------
+// found in second review
+// ---------------------------------------------------------------------------
+
+fn filter_feed_names(db: &Db, filter: &str) -> Vec<String> {
+    let feeds: Option<String> = db
+        .conn()
+        .query_row("SELECT feeds FROM filters WHERE name = ?1", [filter], |r| r.get(0))
+        .unwrap();
+    let mut names: Vec<String> = snaprss_core::filters::parse_feed_list(feeds.as_deref())
+        .unwrap()
+        .into_iter()
+        .map(|id| {
+            db.conn()
+                .query_row("SELECT text FROM feeds WHERE id = ?1", [id], |r| r.get(0))
+                .unwrap()
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn a_filter_keeps_feeds_that_were_already_subscribed() {
+    let fx = build_modern();
+    Connection::open(&fx.path)
+        .unwrap()
+        .execute(
+            "INSERT INTO filters(id, name, type, feeds, enable, num) VALUES(2, 'Only existing', 1, ',10,', 1, 1)",
+            [],
+        )
+        .unwrap();
+    let mut db = Db::open_in_memory().unwrap();
+    db.conn()
+        .execute(
+            "INSERT INTO feeds(kind, text, xml_url) VALUES(1, 'Mine already', 'https://kn.test/feed.xml')",
+            [],
+        )
+        .unwrap();
+    let report = import_quiterss(&mut db, &fx.path).unwrap();
+    assert_eq!(report.duplicates, 1);
+
+    // Old id 10 is the feed that was already here; it must stay in the list.
+    assert_eq!(filter_feed_names(&db, "Star releases"), ["Mine already", "Signal Path"]);
+    assert_eq!(filter_feed_names(&db, "Only existing"), ["Mine already"]);
+    // Its articles are still not imported a second time.
+    assert_eq!(
+        scalar::<i64>(&db, "SELECT COUNT(*) FROM news WHERE feed_id = (SELECT id FROM feeds WHERE text = 'Mine already')"),
+        0
+    );
+}
+
+#[test]
+fn quiterss_success_status_is_not_a_failure() {
+    let fx = build_modern();
+    Connection::open(&fx.path)
+        .unwrap()
+        .execute_batch(
+            // QuiteRSS writes status=0 as a number after parsing and '0' as
+            // text after a successful download.
+            "UPDATE feeds SET status = '0' WHERE id = 10;
+             UPDATE feeds SET status = 0 WHERE id = 11;
+             UPDATE feeds SET status = ' 0 ' WHERE id = 13;",
+        )
+        .unwrap();
+    let mut db = Db::open_in_memory().unwrap();
+    import_quiterss(&mut db, &fx.path).unwrap();
+
+    for name in ["Kernel Notes", "Signal Path", "Orphan Feed"] {
+        let status: Option<String> = db
+            .conn()
+            .query_row("SELECT status FROM feeds WHERE text = ?1", [name], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status.as_deref(), Some(""), "{name}");
+    }
+    let broken: Vec<String> = db
+        .children(None)
+        .unwrap()
+        .into_iter()
+        .filter(|n| n.is_broken())
+        .filter_map(|n| n.text)
+        .collect();
+    assert_eq!(broken, ["Cold Storage"], "only the feed with a real error");
+}
+
+#[test]
+fn success_status_copied_by_earlier_imports_is_repaired_on_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.db");
+    {
+        let db = Db::open(&path).unwrap();
+        db.conn()
+            .execute_batch(
+                "INSERT INTO feeds(kind, text, xml_url, status) VALUES(1, 'ok', 'https://a.test/', '0');
+                 INSERT INTO feeds(kind, text, xml_url, status) VALUES(1, 'ok2', 'https://b.test/', 0);
+                 INSERT INTO feeds(kind, text, xml_url, status) VALUES(1, 'bad', 'https://c.test/', 'http 404');
+                 INSERT INTO feeds(kind, text, xml_url, status) VALUES(1, 'fine', 'https://d.test/', NULL);
+                 UPDATE settings SET value = '3' WHERE key = 'schema_version';",
+            )
+            .unwrap();
+    }
+    let db = Db::open(&path).unwrap();
+    let status = |t: &str| -> Option<String> {
+        db.conn()
+            .query_row("SELECT status FROM feeds WHERE text = ?1", [t], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!(status("ok").as_deref(), Some(""));
+    assert_eq!(status("ok2").as_deref(), Some(""));
+    assert_eq!(status("bad").as_deref(), Some("http 404"));
+    assert_eq!(status("fine"), None);
+    drop(db);
+    // Opening again changes nothing.
+    let db = Db::open(&path).unwrap();
+    assert_eq!(scalar::<i64>(&db, "SELECT COUNT(*) FROM feeds WHERE status = ''"), 2);
+}
+
+/// QuiteRSS writes `received` and `deleteDate` with
+/// `QDateTime::currentDateTime()`, local time without a zone, and `published`
+/// in UTC. Run under a non-UTC `TZ` to see the difference.
+#[test]
+fn local_quiterss_timestamps_are_stored_as_utc() {
+    use chrono::TimeZone;
+    let local_to_utc = |s: &str| {
+        let n = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S").unwrap();
+        chrono::Local
+            .from_local_datetime(&n)
+            .earliest()
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    };
+    let fx = build_modern();
+    Connection::open(&fx.path)
+        .unwrap()
+        .execute("UPDATE news SET deleteDate = '2026-09-17T08:30:00' WHERE id = 104", [])
+        .unwrap();
+    let mut db = Db::open_in_memory().unwrap();
+    import_quiterss(&mut db, &fx.path).unwrap();
+
+    assert_eq!(
+        scalar::<String>(&db, "SELECT received FROM news WHERE title = 'Unread one'"),
+        local_to_utc("2026-09-16T10:05:00")
+    );
+    assert_eq!(
+        scalar::<String>(&db, "SELECT delete_date FROM news WHERE title = 'Deleted one'"),
+        local_to_utc("2026-09-17T08:30:00")
+    );
+    assert_eq!(
+        scalar::<String>(&db, "SELECT published FROM news WHERE title = 'Unread one'"),
+        "2026-09-16T10:00:00Z",
+        "published is UTC already"
+    );
+}
+
+#[test]
+fn feed_urls_are_trimmed_when_stored_and_compared() {
+    let fx = build_modern();
+    Connection::open(&fx.path)
+        .unwrap()
+        .execute("UPDATE feeds SET xmlUrl = ' https://sp.test/feed.xml ' WHERE id = 11", [])
+        .unwrap();
+    let mut db = Db::open_in_memory().unwrap();
+    // Stored with a trailing space by an earlier import.
+    db.conn()
+        .execute(
+            "INSERT INTO feeds(kind, text, xml_url) VALUES(1, 'Mine already', 'https://kn.test/feed.xml ')",
+            [],
+        )
+        .unwrap();
+    let report = import_quiterss(&mut db, &fx.path).unwrap();
+    assert_eq!(report.duplicates, 1, "the stored URL matches once trimmed");
+    assert_eq!(
+        scalar::<String>(&db, "SELECT xml_url FROM feeds WHERE text = 'Signal Path'"),
+        "https://sp.test/feed.xml"
+    );
+}
+
+#[test]
+fn only_folders_in_a_loop_are_moved_to_the_root() {
+    // Folders 1 and 2 are each other's parent; feed 3 sits in folder 1.
+    // Which of them the repair meets first must not matter, so repeat it:
+    // every map gets a fresh hash order.
+    for _ in 0..16 {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("feeds.db");
+        let c = Connection::open(&path).unwrap();
+        c.execute_batch(FEEDS_MODERN).unwrap();
+        c.execute_batch(NEWS_MODERN).unwrap();
+        c.execute_batch(
+            "INSERT INTO feeds(id, parentId, rowToParent, text, xmlUrl) VALUES(1, 2, 0, 'One', '');
+             INSERT INTO feeds(id, parentId, rowToParent, text, xmlUrl) VALUES(2, 1, 0, 'Two', '');
+             INSERT INTO feeds(id, parentId, rowToParent, text, xmlUrl) VALUES(3, 1, 1, 'C', 'https://c.test/f');",
+        )
+        .unwrap();
+        drop(c);
+        let mut db = Db::open_in_memory().unwrap();
+        import_quiterss(&mut db, &path).unwrap();
+        let mut roots: Vec<String> = db.children(None).unwrap().into_iter().filter_map(|n| n.text).collect();
+        roots.sort();
+        assert_eq!(roots, ["One", "Two"]);
+        let parent: String = scalar(&db, "SELECT p.text FROM feeds c JOIN feeds p ON p.id = c.parent_id WHERE c.text = 'C'");
+        assert_eq!(parent, "One");
+    }
+}

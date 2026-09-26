@@ -306,6 +306,10 @@ pub fn purge_deleted(db: &mut Db, older_than_days: Option<i64>) -> Result<Cleanu
     // row outright removed the only record that the article had been seen,
     // and every one still in its feed came back as new and unread on the
     // next poll. QuiteRSS keeps the same kind of stub, with the same value.
+    //
+    // An item with no guid, link or title (a status post) is identified by
+    // its text alone, so for those the description is the identity and
+    // stays. They are short, so keeping it costs little.
     let tx = db.conn_mut().transaction()?;
     tx.execute(
         "DELETE FROM news_labels WHERE news_id IN
@@ -314,7 +318,10 @@ pub fn purge_deleted(db: &mut Db, older_than_days: Option<i64>) -> Result<Cleanu
     )?;
     let n = tx.execute(
         "UPDATE news SET deleted = 2, read = 1, new = 0, starred = 0,
-                description = NULL, content = NULL, article_html = NULL, article_fetched = NULL,
+                description = CASE WHEN TRIM(IFNULL(guid, '')) = '' AND TRIM(IFNULL(link_href, '')) = ''
+                                        AND TRIM(IFNULL(title, '')) = ''
+                                   THEN description END,
+                content = NULL, article_html = NULL, article_fetched = NULL,
                 author_name = NULL, author_uri = NULL, author_email = NULL, category = NULL,
                 comments = NULL, source = NULL, rights = NULL,
                 enclosure_url = NULL, enclosure_type = NULL, enclosure_length = NULL

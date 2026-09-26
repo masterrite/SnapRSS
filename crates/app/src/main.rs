@@ -1,7 +1,10 @@
 // Stops a console window appearing behind the app on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod alerts;
 mod commands;
+mod icons;
+mod tray_badge;
 #[cfg(test)]
 mod bench;
 
@@ -47,6 +50,7 @@ fn main() {
         // public key the downloads are verified against is in tauri.conf.json.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         // The startup entry passes no arguments: whether the window starts
         // minimised is the "Start minimised" setting and nothing else.
@@ -102,6 +106,10 @@ fn main() {
             });
 
             setup_tray(app.handle())?;
+            {
+                let h = app.handle().clone();
+                tauri::async_runtime::spawn(async move { tray_badge::refresh(&h).await });
+            }
 
             close_to_tray.store(to_tray, std::sync::atomic::Ordering::Relaxed);
 
@@ -119,22 +127,42 @@ fn main() {
             if let Some(w) = app.get_webview_window("main") {
                 #[cfg(windows)]
                 set_window_icons(&w);
-                // Before the event loop runs, so nothing is painted at the
-                // default size first.
+                // The window is created hidden (tauri.conf.json), moved and
+                // sized here while still hidden, and shown once the page has
+                // drawn its content (`window_ready`), so it opens in its
+                // place at its size.
+                //
+                // Starting minimised hides it when the user keeps SnapRSS in
+                // the tray either way; minimising to the taskbar would
+                // contradict that.
+                let start = if !start_minimised {
+                    Start::Normal
+                } else if to_tray || min_to_tray {
+                    Start::Hidden
+                } else {
+                    Start::Minimised
+                };
                 #[cfg(windows)]
-                if let Some(p) = placement.as_deref() {
-                    placement::restore(&w, p);
-                }
+                let placed = placement.as_deref().and_then(|p| placement::place_hidden(&w, p, start));
                 #[cfg(not(windows))]
-                let _ = placement;
-                if start_minimised {
-                    // Hidden when the user keeps it in the tray either way;
-                    // minimising to the taskbar would contradict that.
-                    if to_tray || min_to_tray {
-                        let _ = w.hide();
-                    } else {
-                        let _ = w.minimize();
-                    }
+                let placed: Option<bool> = {
+                    let _ = placement;
+                    None
+                };
+                if placed.is_none() {
+                    first_run_size(&w);
+                }
+                let max = placed.unwrap_or(false);
+                if start == Start::Hidden {
+                    MAXIMISE_ON_REVEAL.store(max, std::sync::atomic::Ordering::Relaxed);
+                } else {
+                    *PENDING_SHOW.lock().unwrap() = Some((start, max));
+                    // If the page never says it is ready, show it anyway.
+                    let h = app.handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+                        show_pending(&h);
+                    });
                 }
             }
 
@@ -236,6 +264,9 @@ fn main() {
                         continue;
                     }
 
+                    // Icons for feeds without one, a dozen a minute, alongside.
+                    icons::refresh_in_background(&handle, 12);
+
                     // Fetch with the lock released. Holding it across the
                     // network is what made the whole app stall for as long as
                     // the slowest feed took to answer, once a minute.
@@ -288,6 +319,8 @@ fn main() {
                                 "update tick"
                             );
                             drop(db);
+                            alerts::announce(&handle, &s);
+                            tray_badge::refresh(&handle).await;
                             use tauri::Emitter;
                             let _ = handle.emit("feeds-updated", s.new_articles);
                         }
@@ -332,6 +365,12 @@ fn main() {
             commands::set_reading_mode,
             commands::update_all,
             commands::update_feed_now,
+            commands::discover_feed,
+            window_ready,
+            icons::feed_icons,
+            icons::refresh_feed_icon,
+            alerts::read_sound,
+            alerts::test_sound,
             commands::import_file,
             commands::export_opml,
             commands::get_settings,
@@ -461,12 +500,15 @@ pub mod placement {
     use std::sync::Mutex;
     use tauri::Manager;
     use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
+    use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromRect, MONITORINFO, MONITOR_DEFAULTTONEAREST};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetWindowPlacement, SetWindowPlacement, SW_SHOWMAXIMIZED, SW_SHOWMINIMIZED, SW_SHOWNORMAL,
-        WINDOWPLACEMENT, WPF_RESTORETOMAXIMIZED,
+        GetWindowPlacement, SetWindowPlacement, SetWindowPos, ShowWindow, SWP_NOACTIVATE, SWP_NOZORDER,
+        SW_HIDE, SW_SHOWMAXIMIZED, SW_SHOWMINIMIZED, SW_SHOWMINNOACTIVE, SW_SHOWNORMAL, WINDOWPLACEMENT,
+        WPF_RESTORETOMAXIMIZED,
     };
 
     use crate::commands::AppState;
+    use crate::Start;
 
     /// Last value written, so a quiet minute costs nothing.
     static LAST: Mutex<String> = Mutex::new(String::new());
@@ -494,26 +536,92 @@ pub mod placement {
         }
     }
 
-    pub fn restore(w: &tauri::WebviewWindow, saved: &str) {
+    /// The saved rectangle, kept to put back as the restore size after the
+    /// window is shown maximised.
+    static NORMAL: Mutex<Option<RECT>> = Mutex::new(None);
+
+    fn placement_of(rect: RECT, show: u32, flags: u32) -> WINDOWPLACEMENT {
+        // SAFETY: WINDOWPLACEMENT is plain data; zero is a valid value.
+        let mut wp: WINDOWPLACEMENT = unsafe { std::mem::zeroed() };
+        wp.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
+        wp.showCmd = show;
+        wp.flags = flags;
+        wp.ptMinPosition = POINT { x: -1, y: -1 };
+        wp.ptMaxPosition = POINT { x: -1, y: -1 };
+        wp.rcNormalPosition = rect;
+        wp
+    }
+
+    /// Move and size the still-hidden window to where it was. Returns
+    /// whether it was maximised, or None when there was nothing usable to
+    /// restore.
+    ///
+    /// Everything that changes the window's size happens here, before it is
+    /// first shown: the web view inside follows the window's size a moment
+    /// late, and moving to a monitor with a different scaling makes Windows
+    /// resize the window again. Done after showing, both were visible as the
+    /// window opening at the default size and then jumping.
+    pub fn place_hidden(w: &tauri::WebviewWindow, saved: &str, start: Start) -> Option<bool> {
         let v: Vec<i32> = saved.split(',').filter_map(|p| p.trim().parse().ok()).collect();
-        let [left, top, right, bottom, max] = v[..] else { return };
+        let [left, top, right, bottom, max] = v[..] else { return None };
         if right - left < 200 || bottom - top < 150 {
-            return;
+            return None;
         }
-        let Some(hwnd) = hwnd(w) else { return };
+        let hwnd = hwnd(w)?;
+        let rect = RECT { left, top, right, bottom };
+        let max = max != 0;
+        // SAFETY: a live window handle, and placements built above.
         unsafe {
-            let mut wp: WINDOWPLACEMENT = std::mem::zeroed();
-            wp.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
-            wp.flags = 0;
-            wp.showCmd = if max != 0 { SW_SHOWMAXIMIZED } else { SW_SHOWNORMAL } as u32;
-            wp.ptMinPosition = POINT { x: -1, y: -1 };
-            wp.ptMaxPosition = POINT { x: -1, y: -1 };
-            // Windows moves a rectangle that is off every monitor (one that
-            // has since been unplugged) back onto the screen by itself.
-            wp.rcNormalPosition = RECT { left, top, right, bottom };
-            SetWindowPlacement(hwnd, &wp);
+            // Twice: the first move can land on a monitor with other scaling,
+            // which resizes the window; the second puts the exact size back.
+            // Windows brings a rectangle that is off every monitor (one since
+            // unplugged) back onto the screen by itself.
+            SetWindowPlacement(hwnd, &placement_of(rect, SW_HIDE as u32, 0));
+            SetWindowPlacement(hwnd, &placement_of(rect, SW_HIDE as u32, 0));
+            if max && start == Start::Normal {
+                // Laid out at the maximised size too, so showing it maximised
+                // does not resize the page either. The restore size is put
+                // back once it is shown.
+                let mon = MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST);
+                let mut mi: MONITORINFO = std::mem::zeroed();
+                mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+                if GetMonitorInfoW(mon, &mut mi) != 0 {
+                    let a = mi.rcWork;
+                    SetWindowPos(hwnd, std::ptr::null_mut(), a.left, a.top, a.right - a.left, a.bottom - a.top,
+                                 SWP_NOACTIVATE | SWP_NOZORDER);
+                }
+            }
         }
+        *NORMAL.lock().unwrap() = Some(rect);
         *LAST.lock().unwrap() = saved.to_string();
+        Some(max)
+    }
+
+    /// Show the window placed by [`place_hidden`].
+    pub fn show(w: &tauri::WebviewWindow, start: Start, max: bool) {
+        let Some(hwnd) = hwnd(w) else { return };
+        let normal = *NORMAL.lock().unwrap();
+        // SAFETY: a live window handle.
+        unsafe {
+            match (start, normal) {
+                (Start::Normal, Some(rect)) if max => {
+                    ShowWindow(hwnd, SW_SHOWMAXIMIZED);
+                    // Already maximised, so this only sets where Restore goes.
+                    SetWindowPlacement(hwnd, &placement_of(rect, SW_SHOWMAXIMIZED as u32, 0));
+                }
+                (Start::Normal, _) => {
+                    ShowWindow(hwnd, if max { SW_SHOWMAXIMIZED } else { SW_SHOWNORMAL });
+                }
+                (Start::Minimised, Some(rect)) => {
+                    let flags = if max { WPF_RESTORETOMAXIMIZED } else { 0 };
+                    SetWindowPlacement(hwnd, &placement_of(rect, SW_SHOWMINNOACTIVE as u32, flags));
+                }
+                (Start::Minimised, None) => {
+                    ShowWindow(hwnd, SW_SHOWMINNOACTIVE);
+                }
+                (Start::Hidden, _) => {}
+            }
+        }
     }
 
     fn changed(w: &tauri::WebviewWindow) -> Option<String> {
@@ -531,6 +639,9 @@ pub mod placement {
 
     /// From the background loop, once a minute.
     pub async fn save(w: &tauri::WebviewWindow) {
+        if !crate::SHOWN_ONCE.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
         if let Some(v) = changed(w) {
             let db = w.state::<AppState>().db.clone();
             let db = db.lock().await;
@@ -546,10 +657,95 @@ pub mod placement {
     }
 }
 
+/// How the window starts.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Start {
+    Normal,
+    Minimised,
+    /// In the tray, not on the taskbar.
+    Hidden,
+}
+
+/// Set when the window started hidden in the tray and was maximised when
+/// SnapRSS last closed: a hidden window cannot carry "maximised", so the first
+/// time it is shown it is maximised then.
+static MAXIMISE_ON_REVEAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the window has been on screen since SnapRSS started. Until it
+/// has, its placement is not saved: a window started in the tray is not
+/// maximised yet, and saving it would forget that it should be.
+pub static SHOWN_ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// How the window is to be shown once the page is ready.
+static PENDING_SHOW: std::sync::Mutex<Option<(Start, bool)>> = std::sync::Mutex::new(None);
+
+/// Show the window placed at startup, once.
+fn show_pending(app: &tauri::AppHandle) {
+    let Some((start, max)) = PENDING_SHOW.lock().unwrap().take() else { return };
+    let Some(w) = app.get_webview_window("main") else { return };
+    let w2 = w.clone();
+    SHOWN_ONCE.store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = w.run_on_main_thread(move || {
+        #[cfg(windows)]
+        {
+            placement::show(&w2, start, max);
+            // Tao keeps its own "visible" flag and only changes it when it
+            // shows the window itself. Shown behind its back, the window
+            // counted as hidden, and every hide() after that did nothing:
+            // close-to-tray and the tray icon's click stopped hiding it.
+            // SW_SHOW here keeps the size and state just set.
+            let _ = w2.show();
+        }
+        #[cfg(not(windows))]
+        match start {
+            Start::Normal => {
+                let _ = w2.show();
+                if max {
+                    let _ = w2.maximize();
+                }
+            }
+            Start::Minimised => {
+                let _ = w2.minimize();
+            }
+            Start::Hidden => {}
+        }
+        if start == Start::Normal {
+            let _ = w2.set_focus();
+        }
+    });
+}
+
+/// The page has drawn its content: show the window.
+#[tauri::command]
+fn window_ready(app: tauri::AppHandle) {
+    show_pending(&app);
+}
+
+/// No saved place yet: most of the screen it is on, centred, rather than a
+/// fixed size that is too big for a laptop and small on a large monitor.
+fn first_run_size(w: &tauri::WebviewWindow) {
+    let monitor = w.current_monitor().ok().flatten().or_else(|| w.primary_monitor().ok().flatten());
+    let Some(m) = monitor else { return };
+    let area = m.work_area();
+    let scale = m.scale_factor();
+    let min_w = (900.0 * scale) as u32;
+    let min_h = (560.0 * scale) as u32;
+    let width = ((area.size.width as f64 * 0.8) as u32).max(min_w).min(area.size.width);
+    let height = ((area.size.height as f64 * 0.85) as u32).max(min_h).min(area.size.height);
+    let x = area.position.x + (area.size.width.saturating_sub(width) / 2) as i32;
+    let y = area.position.y + (area.size.height.saturating_sub(height) / 2) as i32;
+    let _ = w.set_size(tauri::PhysicalSize::new(width, height));
+    let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
+}
+
 fn reveal(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
+        SHOWN_ONCE.store(true, std::sync::atomic::Ordering::Relaxed);
         let _ = w.show();
         let _ = w.unminimize();
+        if MAXIMISE_ON_REVEAL.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            let _ = w.maximize();
+        }
         let _ = w.set_focus();
     }
 }

@@ -33,9 +33,10 @@ pub struct IngestReport {
     pub filtered: usize,
     /// Of those, how many a filter sent straight to Deleted.
     pub filtered_away: usize,
-    /// Sounds and notifier colours the filters asked for. The core crate has
-    /// no way to play or show anything, so it hands them up.
+    /// Sound files the filters asked to play. Nothing here can play or show
+    /// anything, so they are handed up to the app.
     pub sounds: Vec<String>,
+    /// Titles of new articles a filter asked to be notified about.
     pub notify: Vec<String>,
 }
 
@@ -156,6 +157,12 @@ fn fmt_ts(d: &DateTime<Utc>) -> String {
 
 /// The identity check. Returns the existing row id if this entry is already
 /// stored for this feed.
+///
+/// `published` is `None` for an entry with no date, and also for one whose
+/// date was in the future and replaced by the time of the poll (`clamped`).
+/// That stored value is a different one on every poll, so it cannot tell two
+/// polls' copies of an entry apart from two entries.
+#[allow(clippy::too_many_arguments)]
 fn find_existing(
     tx: &Transaction<'_>,
     feed_id: i64,
@@ -163,6 +170,7 @@ fn find_existing(
     link: Option<&str>,
     title: Option<&str>,
     published: Option<&str>,
+    clamped: bool,
     summary: Option<&str>,
 ) -> Result<Option<i64>, rusqlite::Error> {
     fn present(v: Option<&str>) -> Option<&str> {
@@ -210,27 +218,53 @@ fn find_existing(
                 return Ok(Some(hit));
             }
         }
-        // Title edited but the entry is otherwise the same.
+        // A title added or dropped, the entry otherwise the same. Two titles
+        // that differ are two entries: a changelog or release page lists
+        // each day's items under one link and one date.
         if let Some(p) = published {
             if let Some(hit) = first(
                 &format!(
                     "SELECT id FROM news WHERE feed_id = ?1 AND link_href = ?2 AND published = ?3
+                       AND (?5 IS NULL OR IFNULL(title, '') = '')
                        AND {SAME_OR_NO_GUID} LIMIT 1"
                 ),
-                &[&feed_id, &l, &p, &guid],
+                &[&feed_id, &l, &p, &guid, &title],
             )? {
                 return Ok(Some(hit));
             }
         }
     }
 
+    // For feeds that reuse one link, or give none. Two links that differ are
+    // two entries: "New comment" at the same minute on two posts is two
+    // comments.
     if let (Some(t), Some(p)) = (title, published) {
         if let Some(hit) = first(
             &format!(
                 "SELECT id FROM news WHERE feed_id = ?1 AND title = ?2 AND published = ?3
+                   AND (?5 IS NULL OR IFNULL(link_href, '') = '' OR link_href = ?5)
                    AND {SAME_OR_NO_GUID} LIMIT 1"
             ),
-            &[&feed_id, &t, &p, &guid],
+            &[&feed_id, &t, &p, &guid, &link],
+        )? {
+            return Ok(Some(hit));
+        }
+    }
+
+    // No usable date and only one of title and link, so none of the rules
+    // above applies and the item was new on every poll. Whatever the entry
+    // has must match exactly, the missing one included, against a row that
+    // was stored without a date too. A clamped date was stored, but as the
+    // time of some earlier poll, so any stored date will do for that entry.
+    if published.is_none() && link.is_some() != title.is_some() {
+        if let Some(hit) = first(
+            &format!(
+                "SELECT id FROM news WHERE feed_id = ?1
+                   AND IFNULL(link_href, '') = IFNULL(?2, '') AND IFNULL(title, '') = IFNULL(?3, '')
+                   AND (?5 OR IFNULL(published, '') = '')
+                   AND {SAME_OR_NO_GUID} LIMIT 1"
+            ),
+            &[&feed_id, &link, &title, &guid, &clamped],
         )? {
             return Ok(Some(hit));
         }
@@ -244,9 +278,9 @@ fn find_existing(
             if let Some(hit) = first(
                 "SELECT id FROM news WHERE feed_id = ?1
                    AND IFNULL(link_href, '') = '' AND IFNULL(title, '') = ''
-                   AND description = ?2 AND IFNULL(published, '') = IFNULL(?3, '')
+                   AND description = ?2 AND (?4 OR IFNULL(published, '') = IFNULL(?3, ''))
                  LIMIT 1",
-                &[&feed_id, &body, &published],
+                &[&feed_id, &body, &published, &clamped],
             )? {
                 return Ok(Some(hit));
             }
@@ -346,10 +380,9 @@ pub fn ingest(
     for entry in &parsed.entries {
         // A date in the future is a wrong clock or a wrong time zone, and it
         // would sit at the top of every list until the date passed.
-        let published: Option<DateTime<Utc>> = entry
-            .published
-            .or(entry.updated)
-            .map(|p| if p > now + chrono::Duration::hours(1) { now } else { p });
+        let dated = entry.published.or(entry.updated);
+        let clamped = dated.is_some_and(|p| p > now + chrono::Duration::hours(1));
+        let published: Option<DateTime<Utc>> = if clamped { Some(now) } else { dated };
 
         if !rules.add_any_date {
             if let (Some(p), Some(cutoff)) = (published, rules.avoid_old_before) {
@@ -374,7 +407,8 @@ pub fn ingest(
             guid.as_deref(),
             link.as_deref(),
             title.as_deref(),
-            published_s.as_deref(),
+            published_s.as_deref().filter(|_| !clamped),
+            clamped,
             summary.as_deref(),
         )?;
 
@@ -384,9 +418,13 @@ pub fn ingest(
                 // Only rewrite if something actually differs, so read/starred
                 // state and the row's position are left alone in the common
                 // case of an unchanged entry.
+                //
+                // Never a purged stub (deleted = 2). Cleanup emptied it to
+                // free the space, and it stays only to be recognised; filling
+                // it in again brought the body back on the next poll.
                 let changed = tx.execute(
                     "UPDATE news SET title = ?1, description = ?2, content = ?3, modified = ?4
-                     WHERE id = ?5
+                     WHERE id = ?5 AND deleted <> 2
                        AND (IFNULL(title,'') <> IFNULL(?1,'')
                             OR IFNULL(description,'') <> IFNULL(?2,'')
                             OR IFNULL(content,'') <> IFNULL(?3,''))",
@@ -492,8 +530,10 @@ pub fn ingest(
                 if eff.delete {
                     report.filtered_away += 1;
                 }
-                report.sounds.extend(eff.sounds.iter().cloned());
-                report.notify.extend(eff.notify.iter().cloned());
+                report.sounds.extend(eff.sounds.iter().filter(|p| !p.trim().is_empty()).cloned());
+                if !eff.notify.is_empty() {
+                    report.notify.push(title.clone().unwrap_or_else(|| "(untitled)".into()));
+                }
                 filters::apply(&tx, news_id, &eff)?;
             }
         }

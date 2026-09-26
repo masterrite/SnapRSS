@@ -35,7 +35,6 @@ fn rfc2822(s: &str) -> Option<DateTime<Utc>> {
                 Regex::new("(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*").unwrap(),
                 "$1",
             ),
-            Fix(Regex::new(" 24:").unwrap(), " 00:"),
             Fix(Regex::new(" ([0-9]):").unwrap(), " 0${1}:"),
         ]
     });
@@ -47,7 +46,6 @@ fn rfc3339(s: &str) -> Option<DateTime<Utc>> {
     let f = fixes(&F, || {
         vec![
             Fix(Regex::new(r"(\+|-)(\d{2})(\d{2})$").unwrap(), "${1}${2}:${3}"),
-            Fix(Regex::new(r"-\d{2}$").unwrap(), "${0}T00:00:00+00:00"),
         ]
     });
     let s = apply(s, f);
@@ -118,10 +116,23 @@ pub fn parse(original: &str, chinese: bool) -> Option<DateTime<Utc>> {
     } else {
         FixedOffset::east_opt(0).unwrap()
     };
+    // "24:30" is half past midnight at the end of the day, which no parser
+    // accepts. Read it as 00:30 and move to the next day; reading it as 00:30
+    // alone put the article a day early.
+    static H24: OnceLock<Regex> = OnceLock::new();
+    let h24 = H24.get_or_init(|| Regex::new(r"([ T])24:(\d{2})").unwrap());
+    let next_day = h24.is_match(&s);
+    if next_day {
+        s = h24.replace(&s, "${1}00:${2}").to_string();
+    }
+    // A bare date ("2024-01-15") is left to `naive`, which reads it in the
+    // feed's zone. The feed-rs repair that made it midnight UTC ran first and
+    // put a Chinese feed's articles eight hours late.
     rfc3339(&s)
         .or_else(|| rfc2822(&s))
         .or_else(|| rfc1123(&s))
         .or_else(|| naive(&s, zone))
+        .map(|d| if next_day { d + chrono::Duration::days(1) } else { d })
 }
 
 /// Whether a feed is Chinese: its declared language, or failing that, its

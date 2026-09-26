@@ -115,7 +115,8 @@ fn get<'a>(attrs: &'a [(String, String)], name: &str) -> Option<&'a str> {
 }
 
 fn outline_from(attrs: &[(String, String)]) -> Outline {
-    let xml_url = get(attrs, "xmlurl").map(str::to_string);
+    // Trimmed, so a stray space does not make the same feed look new.
+    let xml_url = get(attrs, "xmlurl").map(|u| u.trim().to_string());
     let title = get(attrs, "text")
         .or_else(|| get(attrs, "title"))
         .map(str::to_string)
@@ -293,7 +294,8 @@ pub fn import_str(db: &mut Db, xml: &str) -> Result<ImportReport, OpmlError> {
         let rows = stmt
             .query_map([], |r| r.get::<_, String>(0))
             .map_err(DbError::from)?;
-        rows.filter_map(Result::ok).collect()
+        // Earlier imports stored URLs untrimmed.
+        rows.filter_map(Result::ok).map(|u| u.trim().to_string()).collect()
     };
     let mut seen = known;
 
@@ -310,7 +312,8 @@ pub fn import_str(db: &mut Db, xml: &str) -> Result<ImportReport, OpmlError> {
             |r| r.get(0),
         )
         .map_err(DbError::from)?;
-    insert_all(&tx, &roots, None, root_offset, &mut seen, &mut report, &now)?;
+    let mut row = root_offset;
+    insert_all(&tx, &roots, None, &mut row, &mut seen, &mut report, &now)?;
     // Re-importing a file with folders made a second, empty copy of each.
     super::quiterss::merge_duplicate_folders(&tx, pre_max_id).map_err(DbError::from)?;
     tx.commit().map_err(DbError::from)?;
@@ -323,38 +326,41 @@ fn insert_all(
     tx: &rusqlite::Transaction<'_>,
     nodes: &[Outline],
     parent: Option<i64>,
-    first_row: i64,
+    // The next free position under `parent`. Shared with the calls that
+    // put a feed's nested outlines beside it, so they take the positions
+    // after the feed and the siblings that follow move along.
+    row: &mut i64,
     seen: &mut HashSet<String>,
     report: &mut ImportReport,
     now: &str,
 ) -> Result<(), OpmlError> {
-    for (this_row, node) in (first_row..).zip(nodes) {
+    for node in nodes {
+        let this_row = *row;
         if let Some(url) = node.xml_url.as_deref() {
-            // Outlines nested under a feed are not valid OPML but do occur.
-            // They are kept, beside the feed, rather than dropped unseen.
-            if !node.children.is_empty() {
-                insert_all(tx, &node.children, parent, this_row, seen, report, now)?;
-            }
-            if !seen.insert(url.to_string()) {
+            if seen.insert(url.to_string()) {
+                tx.execute(
+                    "INSERT INTO feeds (kind, parent_id, row_to_parent, text, title,
+                                        description, xml_url, html_url, created)
+                     VALUES (1, ?1, ?2, ?3, ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        parent,
+                        this_row,
+                        node.title,
+                        node.description,
+                        url,
+                        node.html_url,
+                        now
+                    ],
+                )
+                .map_err(DbError::from)?;
+                *row += 1;
+                report.feeds += 1;
+            } else {
                 report.duplicates += 1;
-                continue;
             }
-            tx.execute(
-                "INSERT INTO feeds (kind, parent_id, row_to_parent, text, title,
-                                    description, xml_url, html_url, created)
-                 VALUES (1, ?1, ?2, ?3, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    parent,
-                    this_row,
-                    node.title,
-                    node.description,
-                    url,
-                    node.html_url,
-                    now
-                ],
-            )
-            .map_err(DbError::from)?;
-            report.feeds += 1;
+            // Outlines nested under a feed are not valid OPML but do occur.
+            // They are kept, right after the feed, rather than dropped unseen.
+            insert_all(tx, &node.children, parent, row, seen, report, now)?;
         } else {
             tx.execute(
                 "INSERT INTO feeds (kind, parent_id, row_to_parent, text, xml_url)
@@ -362,9 +368,10 @@ fn insert_all(
                 params![parent, this_row, node.title],
             )
             .map_err(DbError::from)?;
+            *row += 1;
             let id = tx.last_insert_rowid();
             report.folders += 1;
-            insert_all(tx, &node.children, Some(id), 0, seen, report, now)?;
+            insert_all(tx, &node.children, Some(id), &mut 0, seen, report, now)?;
         }
     }
     Ok(())

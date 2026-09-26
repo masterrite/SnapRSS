@@ -111,6 +111,7 @@ fn due(id: i64, url: &str) -> DueFeed {
         xml_url: url.to_string(),
         etag: None,
         last_modified: None,
+        credentials: None,
     }
 }
 
@@ -1021,4 +1022,145 @@ fn relative_links_resolve_against_where_the_feed_came_from() {
     .unwrap();
     let link: String = db.conn().query_row("SELECT link_href FROM news", [], |r| r.get(0)).unwrap();
     assert_eq!(link, "https://new.test/posts/1");
+}
+
+// ---------------------------------------------------------------------------
+// third review
+// ---------------------------------------------------------------------------
+
+fn poll(db: &mut Db, id: i64, xml: &str) -> snaprss_fetch::IngestReport {
+    let rules = IngestRules::load(db, id).unwrap();
+    ingest(db, id, &parse_feed(xml.as_bytes(), "https://f.test/feed").unwrap(), &rules).unwrap()
+}
+
+fn descriptions(db: &Db) -> Vec<String> {
+    let mut stmt = db.conn().prepare("SELECT IFNULL(description, '') FROM news ORDER BY id").unwrap();
+    stmt.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
+}
+
+#[test]
+fn a_shared_title_and_date_with_different_links_are_two_articles() {
+    let xml = r#"<rss version="2.0"><channel><title>T</title>
+      <item><title>New comment</title><link>https://f.test/a</link><description>one</description><pubDate>Tue, 16 Sep 2026 00:00:00 GMT</pubDate></item>
+      <item><title>New comment</title><link>https://f.test/b</link><description>two</description><pubDate>Tue, 16 Sep 2026 00:00:00 GMT</pubDate></item>
+    </channel></rss>"#;
+    let (mut db, id) = db_with_feed("https://f.test/feed");
+    poll(&mut db, id, xml);
+    let again = poll(&mut db, id, xml);
+    assert_eq!(descriptions(&db), ["one", "two"]);
+    assert_eq!((again.inserted, again.updated), (0, 0), "{again:?}");
+}
+
+#[test]
+fn a_shared_link_and_date_with_different_titles_are_two_articles() {
+    let xml = r#"<rss version="2.0"><channel><title>T</title>
+      <item><title>Fixed crash on start</title><link>https://f.test/changelog</link><description>one</description><pubDate>Tue, 16 Sep 2026 00:00:00 GMT</pubDate></item>
+      <item><title>Added dark mode</title><link>https://f.test/changelog</link><description>two</description><pubDate>Tue, 16 Sep 2026 00:00:00 GMT</pubDate></item>
+    </channel></rss>"#;
+    let (mut db, id) = db_with_feed("https://f.test/feed");
+    poll(&mut db, id, xml);
+    let again = poll(&mut db, id, xml);
+    assert_eq!(descriptions(&db), ["one", "two"]);
+    assert_eq!((again.inserted, again.updated), (0, 0), "{again:?}");
+}
+
+#[test]
+fn undated_items_with_only_a_title_or_only_a_link_are_stored_once() {
+    let xml = r#"<rss version="2.0"><channel><title>T</title>
+      <item><title>Only a title</title><description>hello</description></item>
+      <item><link>https://f.test/x</link><description>only a link</description></item>
+    </channel></rss>"#;
+    let (mut db, id) = db_with_feed("https://f.test/feed");
+    for _ in 0..3 {
+        poll(&mut db, id, xml);
+    }
+    assert_eq!(rows(&db), 2);
+}
+
+#[test]
+fn items_dated_in_the_future_are_stored_once() {
+    let xml = r#"<rss version="2.0"><channel><title>T</title>
+      <item><title>Status</title><description>hello</description><pubDate>Tue, 16 Sep 2036 00:00:00 GMT</pubDate></item>
+      <item><link>https://f.test/y</link><description>linked</description><pubDate>Tue, 16 Sep 2036 00:00:00 GMT</pubDate></item>
+      <item><description>just text</description><pubDate>Tue, 16 Sep 2036 00:00:00 GMT</pubDate></item>
+    </channel></rss>"#;
+    let (mut db, id) = db_with_feed("https://f.test/feed");
+    poll(&mut db, id, xml);
+    // The stored date is the time of the poll, which has moved on by the next.
+    db.conn().execute("UPDATE news SET published = '2026-01-01T00:00:00Z'", []).unwrap();
+    let again = poll(&mut db, id, xml);
+    assert_eq!(rows(&db), 3, "{again:?}");
+}
+
+#[test]
+fn a_purged_stub_is_never_rewritten() {
+    let xml = |body: &str| {
+        format!(
+            r#"<rss version="2.0"><channel><title>T</title>
+            <item><guid>g1</guid><title>A</title><link>https://f.test/a</link><description>{body}</description></item>
+            </channel></rss>"#
+        )
+    };
+    let (mut db, id) = db_with_feed("https://f.test/feed");
+    poll(&mut db, id, &xml("big body"));
+    db.conn()
+        .execute("UPDATE news SET deleted = 1, delete_date = '2000-01-01T00:00:00Z'", [])
+        .unwrap();
+    snaprss_core::cleanup::purge_deleted(&mut db, None).unwrap();
+    for body in ["big body", "edited body"] {
+        let r = poll(&mut db, id, &xml(body));
+        assert_eq!((r.inserted, r.updated), (0, 0), "{r:?}");
+    }
+    let (deleted, read, desc): (i64, i64, Option<String>) = db
+        .conn()
+        .query_row("SELECT deleted, read, description FROM news", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap();
+    assert_eq!((deleted, read, desc), (2, 1, None));
+}
+
+#[test]
+fn hour_24_is_the_next_day_and_a_bare_date_is_read_in_the_feeds_zone() {
+    use snaprss_fetch::dates::parse;
+    let at = |s: &str| chrono::DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc);
+    assert_eq!(parse("Tue, 16 Sep 2026 24:30:00 GMT", false), Some(at("2026-09-17T00:30:00Z")));
+    assert_eq!(parse("Wed, 30 Sep 2026 24:00:00 +0200", false), Some(at("2026-09-30T22:00:00Z")));
+    assert_eq!(parse("2026-09-16 24:00:00", false), Some(at("2026-09-17T00:00:00Z")));
+    assert_eq!(parse("2026-09-16", true), Some(at("2026-09-15T16:00:00Z")));
+    assert_eq!(parse("2026-09-16", false), Some(at("2026-09-16T00:00:00Z")));
+    assert_eq!(parse("Tue, 16 Sep 2026 10:24:00 GMT", false), Some(at("2026-09-16T10:24:00Z")));
+}
+
+#[test]
+fn a_feed_id_reused_while_its_fetch_was_in_flight_gets_nothing() {
+    let rss = r#"<rss version="2.0"><channel><title>Old Feed X</title><link>https://same.test/</link>
+        <item><guid>x1</guid><title>Article from X</title><link>https://same.test/x1</link></item>
+    </channel></rss>"#;
+    let (mut db, x) = db_with_feed("https://same.test/x.xml");
+    // Removed and another added while the fetch was out; SQLite hands out the
+    // same id again.
+    db.conn().execute("DELETE FROM feeds WHERE id = ?1", [x]).unwrap();
+    db.conn()
+        .execute("INSERT INTO feeds(kind, text, xml_url) VALUES (1, 'same.test', 'https://same.test/y.xml')", [])
+        .unwrap();
+    let y = db.conn().last_insert_rowid();
+    assert_eq!(x, y, "id reused");
+    let s = apply_fetched(
+        &mut db,
+        vec![Fetched {
+            feed: due(x, "https://same.test/x.xml"),
+            result: Ok(FetchOutcome::Body {
+                bytes: rss.as_bytes().to_vec(),
+                validators: Validators { etag: Some("\"x-etag\"".into()), last_modified: None },
+                final_url: None,
+                content_type: None,
+            }),
+        }],
+    )
+    .unwrap();
+    let (text, etag): (String, Option<String>) = db
+        .conn()
+        .query_row("SELECT text, http_etag FROM feeds WHERE id = ?1", [y], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap();
+    assert_eq!((s.attempted, rows(&db)), (0, 0), "{s:?}");
+    assert_eq!((text.as_str(), etag), ("same.test", None));
 }

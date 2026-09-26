@@ -34,6 +34,10 @@ window.__TAURI__.app?.getVersion?.()
   .catch(() => {});
 const THEMES = ["system", "system2", "dark", "gray", "green", "orange", "pink", "purple"];
 
+/// Set while the Shortcuts page is waiting for a key, so the key is
+/// recorded instead of acted on.
+let keyCapture = null;
+
 const state = {
   /// null until the user picks a feed, folder or category: the list starts
   /// empty rather than guessing what to show.
@@ -53,6 +57,17 @@ const state = {
   tree: [],
   labels: [],
   query: "",
+  /// More rows exist past the ones loaded; scrolling near the end fetches
+  /// the next page.
+  more: false,
+  loadingMore: false,
+  /// Site icons by feed id, as data: URLs. Feeds without one show a letter.
+  icons: {},
+  /// `date`, `title`, `author` or `feed`; a leading `-` means descending.
+  sort: (() => { try { return localStorage.getItem("sort") || "-date"; } catch { return "-date"; } })(),
+  /// scope|query|sort of the rows in `items`, so a reload of the same list
+  /// keeps as many rows as were loaded instead of snapping back to one page.
+  listKey: "",
 };
 
 /// The focused article's list row, or null. It can legitimately be missing:
@@ -83,11 +98,16 @@ function setSelection(ids, { anchor } = {}) {
   renderSelection();
 }
 
+/// The selection as the rows on screen show it. Only rows whose state
+/// changed are touched: going over every row on each keypress got slow with
+/// thousands of rows loaded.
+let shownSel = new Set();
 function renderSelection() {
-  const list = $("#list");
-  list?.querySelectorAll(".item").forEach((n) => {
-    n.dataset.sel = String(state.sel.has(Number(n.dataset.id)));
-  });
+  if ($("#list")) {
+    for (const id of shownSel) if (!state.sel.has(id)) { const n = rowNode(id); if (n) n.dataset.sel = "false"; }
+    for (const id of state.sel) if (!shownSel.has(id)) { const n = rowNode(id); if (n) n.dataset.sel = "true"; }
+    shownSel = new Set(state.sel);
+  }
   const badge = $("#selcount");
   if (badge) {
     badge.textContent = state.sel.size > 1 ? `${state.sel.size} selected` : "";
@@ -128,7 +148,14 @@ function ask({ title, placeholder = "", value = "", confirmLabel = "OK", danger 
     const done = (v) => { back.remove(); document.removeEventListener("keydown", key, true); resolve(v); };
     const key = (e) => {
       if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); done(null); }
-      if (e.key === "Enter")  { e.preventDefault(); e.stopPropagation(); done(input ? input.value.trim() : true); }
+      if (e.key === "Enter") {
+        // Enter on Cancel is a press of Cancel, which the button does itself.
+        // Taking every Enter as OK meant tabbing to Cancel and pressing Enter
+        // removed the feed anyway.
+        const f = document.activeElement;
+        if (f && back.contains(f) && f !== input && !f.matches("[data-ok]")) return;
+        e.preventDefault(); e.stopPropagation(); done(input ? input.value.trim() : true);
+      }
     };
 
     back.querySelector("[data-cancel]").onclick = () => done(null);
@@ -136,6 +163,37 @@ function ask({ title, placeholder = "", value = "", confirmLabel = "OK", danger 
     back.onclick = (e) => { if (e.target === back) done(null); };
     document.addEventListener("keydown", key, true);
     if (input) { input.focus(); input.select(); } else back.querySelector("[data-ok]").focus();
+  });
+}
+
+/// A list of choices in a modal; resolves to the chosen value, or null.
+function choose({ title, options }) {
+  if (modalOpen()) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const back = document.createElement("div");
+    back.className = "modal-back";
+    back.innerHTML = `
+      <div class="modal" role="dialog" aria-modal="true" aria-label="${esc(title)}">
+        <div class="modal-title">${esc(title)}</div>
+        <div class="choices">
+          ${options.map((o, i) => `
+            <button class="choice" data-choice="${i}"${o.disabled ? " disabled" : ""}>
+              <span class="c1">${esc(o.label)}${o.note ? ` <span class="faint">· ${esc(o.note)}</span>` : ""}</span>
+              ${o.sub ? `<span class="c2">${esc(o.sub)}</span>` : ""}
+            </button>`).join("")}
+        </div>
+        <div class="modal-row"><button class="pill" data-cancel>Cancel</button></div>
+      </div>`;
+    document.body.append(back);
+    const done = (v) => { back.remove(); document.removeEventListener("keydown", key, true); resolve(v); };
+    const key = (e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); done(null); } };
+    back.querySelectorAll("[data-choice]").forEach((b) => {
+      b.onclick = () => done(options[+b.dataset.choice].value);
+    });
+    back.querySelector("[data-cancel]").onclick = () => done(null);
+    back.onclick = (e) => { if (e.target === back) done(null); };
+    document.addEventListener("keydown", key, true);
+    back.querySelector("[data-choice]:not([disabled])")?.focus();
   });
 }
 
@@ -209,9 +267,24 @@ const STAR_OUTLINE = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none
 function setStarButton(el, on) {
   if (!el) return;
   el.classList.toggle("on", !!on);
-  el.innerHTML = on ? STAR_SOLID : STAR_OUTLINE;
+  // Only the icon changes: replacing the whole button dropped its text label,
+  // and the tooltip named S even when the shortcut had been changed.
+  const t = document.createElement("template");
+  t.innerHTML = on ? STAR_SOLID : STAR_OUTLINE;
+  const icon = t.content.firstElementChild;
+  icon.setAttribute("aria-hidden", "true");
+  const old = el.querySelector("svg");
+  if (old) {
+    icon.setAttribute("width", old.getAttribute("width"));
+    icon.setAttribute("height", old.getAttribute("height"));
+    old.replaceWith(icon);
+  } else el.prepend(icon);
   el.setAttribute("aria-pressed", String(!!on));
-  el.title = on ? "Unstar (S)" : "Star (S)";
+  // What refreshKeyTips reads, so a later shortcut change keeps "Unstar".
+  el.dataset.keyaction = "star";
+  el.dataset.tip = on ? "Unstar" : "Star";
+  const k = keyHint("star");
+  el.title = k ? `${el.dataset.tip} (${k})` : el.dataset.tip;
 }
 
 /// A filled blue disc for unread, a hollow ring for read. Rendering both as
@@ -282,6 +355,72 @@ const ICON_DOT = '<circle cx="8" cy="8" r="3.4" fill="currentColor"/>';
 const ICON_STAR = '<path d="M8 2.3l1.75 3.66 3.95.55-2.87 2.78.7 3.99L8 11.4l-3.53 1.88.7-3.99L2.3 6.51l3.95-.55z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>';
 const ICON_TRASH = '<path d="M2.6 4.4h10.8M4 4.4l.7 8.1a1 1 0 0 0 1 .9h4.6a1 1 0 0 0 1-.9l.7-8.1M6 4.4V3a.9.9 0 0 1 .9-.9h2.2a.9.9 0 0 1 .9.9v1.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>';
 
+/// A feed's site icon, or a coloured letter when it has none.
+function feedIcon(feedId, title, cls) {
+  const src = state.icons[feedId];
+  if (src) return `<img class="favicon img ${cls}" src="${esc(src)}" alt="" draggable="false">`;
+  return `<span class="favicon ${cls}" data-bg="${esc(tint(title))}">${esc((title || "?").trim()[0] || "?").toUpperCase()}</span>`;
+}
+
+// ------------------------------------------------------------ text size
+// The reading pane's text size, per machine. Applied with CSS zoom on the
+// article column, as a browser's zoom would, so images and the column
+// width grow with the text.
+const TEXT_STEPS = [0.8, 0.9, 1, 1.1, 1.2, 1.35, 1.5, 1.75, 2];
+function textScale() {
+  let v = 1;
+  try { v = Number(localStorage.getItem("textScale")) || 1; } catch {}
+  return TEXT_STEPS.includes(v) ? v : 1;
+}
+function setTextScale(v, { quiet = false } = {}) {
+  document.documentElement.style.setProperty("--text-scale", String(v));
+  try { localStorage.setItem("textScale", String(v)); } catch {}
+  if (!quiet) toast(`Text size ${Math.round(v * 100)}%`);
+  const out = document.querySelector("[data-textsize]");
+  if (out) out.textContent = `${Math.round(v * 100)}%`;
+}
+function textBigger() {
+  const i = TEXT_STEPS.indexOf(textScale());
+  setTextScale(TEXT_STEPS[Math.min(TEXT_STEPS.length - 1, i + 1)]);
+}
+function textSmaller() {
+  const i = TEXT_STEPS.indexOf(textScale());
+  setTextScale(TEXT_STEPS[Math.max(0, i - 1)]);
+}
+function textReset() { setTextScale(1); }
+
+/// Icons arrive as data: URLs, which can be tens of KB each. Written into
+/// every row they made the list's HTML megabytes long, rebuilt on each
+/// click; turned into short blob: URLs once, each row carries a reference.
+async function loadIcons() {
+  let raw = {};
+  try { raw = await invoke("feed_icons") || {}; } catch {}
+  const old = state.icons;
+  const next = {};
+  const kept = new Set();
+  for (const [id, url] of Object.entries(raw)) {
+    // An icon that has not changed keeps its address, so the rows showing it
+    // are left alone when a batch of new icons arrives.
+    if (iconData[id] === url && old[id]) { next[id] = old[id]; kept.add(old[id]); }
+    else next[id] = blobUrl(url) || url;
+  }
+  iconData = raw;
+  state.icons = next;
+  for (const u of Object.values(old)) if (u.startsWith("blob:") && !kept.has(u)) URL.revokeObjectURL(u);
+}
+let iconData = {};
+function blobUrl(dataUrl) {
+  try {
+    if (typeof URL.createObjectURL !== "function") return null;
+    const m = dataUrl.match(/^data:([^;,]+);base64,(.*)$/);
+    if (!m) return null;
+    const bin = atob(m[2]);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return URL.createObjectURL(new Blob([bytes], { type: m[1] }));
+  } catch { return null; }
+}
+
 function row(opts) {
   const { scope, label, count, depth, node } = opts;
   // A div, not a button. Chromium refuses to start a drag from a form control,
@@ -302,7 +441,7 @@ function row(opts) {
   if (node) {
     icon = node.is_folder
       ? `<span class="twisty toggle" data-toggle="${node.id}" role="button" aria-label="${node.expanded === false ? "Expand" : "Collapse"}" aria-expanded="${node.expanded !== false}"><svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M4 6.5L8 10.5l4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`
-      : `<span class="favicon" data-bg="${esc(tint(label))}">${esc(label.trim()[0] || "?").toUpperCase()}</span>`;
+      : feedIcon(node.id, label, "");
   } else if (opts.swatch) {
     icon = `<span class="twisty dotwrap"><span class="swatch-dot" data-bg="${esc(opts.swatch)}"></span></span>`;
   } else if (opts.icon) {
@@ -503,6 +642,9 @@ function wireTreeRootDrop() {
 }
 
 async function selectScope(scope, label) {
+  // Another feed opens at its top. Kept scrolled, it opened mid-list and could
+  // ask for its second page straight away.
+  if (scope !== state.scope) $("#list").scrollTop = 0;
   state.scope = scope;
   state.scopeName = label;
   // A selection from the previous view means nothing here.
@@ -528,11 +670,41 @@ async function clearScope() {
 
 // ------------------------------------------------------------------ list pane
 let loadListTicket = 0;
+const PAGE = 500;
+/// The most rows a reload asks for, the backend's own limit.
+const MAX_ROWS = 20000;
+
+/// What the list shows: the chosen scope, or everything when there is none
+/// but the search box has something in it.
+function listScope() {
+  return state.scope || (state.query.trim() ? "all" : null);
+}
+
+/// Which list the scope, search and sort describe; state.listKey is the one
+/// on screen.
+function listKeyNow() {
+  return `${listScope()}|${state.query.trim()}|${state.sort}`;
+}
+
+function fetchList(scope, offset, limit) {
+  return invoke("news_list", {
+    scope,
+    limit,
+    offset,
+    excerpts: document.documentElement.dataset.layout === "newspaper",
+    query: state.query.trim() || null,
+    sort: state.sort,
+  });
+}
+
 async function loadList() {
-  if (!state.scope) {
+  const scope = listScope();
+  if (!scope) {
     state.items = [];
     state.sel = new Set();
     state.anchor = null;
+    state.more = false;
+    state.listKey = "";
     renderList();
     return;
   }
@@ -540,21 +712,101 @@ async function loadList() {
   // the latest request is used, or the list showed the previous feed under
   // the new one's name, and bulk actions went to the wrong articles.
   const ticket = ++loadListTicket;
-  const scope = state.scope;
-  const items = await invoke("news_list", {
-    scope,
-    limit: 500,
-    excerpts: document.documentElement.dataset.layout === "newspaper",
-  });
-  if (ticket !== loadListTicket || scope !== state.scope) return;
+  const key = listKeyNow();
+  // Reloading the same list (after an update, a delete, marking read) keeps
+  // every row that was loaded, so the list does not jump back to one page.
+  const limit = key === state.listKey ? Math.min(MAX_ROWS, Math.max(PAGE, state.items.length)) : PAGE;
+  const items = await fetchList(scope, 0, limit);
+  if (ticket !== loadListTicket || scope !== listScope()) return;
+  const same = key === state.listKey && items.length === state.items.length
+    && items.every((it, k) => it.id === state.items[k].id) && !!$("#list .item")
+    && drawnLayout === document.documentElement.dataset.layout;
+  const changed = same
+    ? items.filter((it, k) => JSON.stringify(it) !== JSON.stringify(state.items[k])).map((i) => i.id)
+    : null;
   state.items = items;
+  state.more = items.length === limit;
+  state.listKey = key;
   // A reload can drop rows: read articles leave the Unread scope, deleted ones
   // leave every scope. Stale ids in the selection would make bulk actions
   // operate on things the user can no longer see.
   const live = new Set(state.items.map((i) => i.id));
   state.sel = new Set([...state.sel].filter((id) => live.has(id)));
   if (state.anchor !== null && !live.has(state.anchor)) state.anchor = null;
-  renderList();
+  // A reload after a background update usually brings back the same
+  // articles in the same order. Redrawing every row then froze the window
+  // for a second with thousands loaded, every time an update ran.
+  if (same) {
+    redrawRows(changed);
+    renderSelection();
+    // Articles can arrive below the loaded ones (sorted oldest first, or an
+    // old date), so whether there are more is asked again each time.
+    const marker = $("#list .more");
+    if (state.more && !marker) $("#list").insertAdjacentHTML("beforeend", `<div class="more">Loading more…</div>`);
+    if (!state.more && marker) marker.remove();
+  } else renderList();
+}
+
+/// The next page, when the list is scrolled near its end. The request
+/// overlaps the rows already loaded, because articles marked read in Unread
+/// have left the scope on the server; duplicates are dropped here.
+///
+/// No cap on the total: a single request is capped, pages are not, and a stop
+/// at 20000 left "Loading more…" showing with older articles out of reach.
+async function loadMore() {
+  const scope = listScope();
+  if (!scope || !state.more || state.loadingMore) return;
+  // Only the list on screen pages. Between a feed click or a search and its
+  // reply, the rows here belong to the previous list, and their count taken
+  // as an offset into the new one skipped rows or mixed the two.
+  const key = listKeyNow();
+  if (key !== state.listKey) return;
+  state.loadingMore = true;
+  const ticket = loadListTicket;
+  // Where the next page starts on the server: the loaded rows still in the
+  // scope. Articles read in Unread (or unstarred in Starred) have left it
+  // there but not here, and counting them skipped as many unread articles.
+  const still = scope === "unread" ? state.items.filter((i) => !i.read).length
+    : scope === "starred" ? state.items.filter((i) => i.starred).length
+    : state.items.length;
+  const overlap = Math.min(50, still);
+  try {
+    const page = await fetchList(scope, still - overlap, PAGE + overlap);
+    if (ticket !== loadListTicket || key !== state.listKey || key !== listKeyNow()) return;
+    const have = new Set(state.items.map((i) => i.id));
+    const added = page.filter((i) => !have.has(i.id));
+    state.items = state.items.concat(added);
+    state.more = page.length === PAGE + overlap;
+    appendRows(added);
+  } finally {
+    state.loadingMore = false;
+  }
+}
+
+function setSort(sort) {
+  state.sort = sort;
+  try { localStorage.setItem("sort", sort); } catch {}
+  paintSortHead();
+  $("#list").scrollTop = 0;
+  loadList();
+}
+
+/// A click on a column heading sorts by it; a second click reverses.
+/// Dates start newest first, text starts A to Z.
+function toggleSort(key) {
+  const cur = state.sort.replace(/^-/, "");
+  if (cur === key) setSort(state.sort.startsWith("-") ? key : `-${key}`);
+  else setSort(key === "date" ? "-date" : key);
+}
+
+function paintSortHead() {
+  const key = state.sort.replace(/^-/, "");
+  const arrow = state.sort.startsWith("-") ? " ▼" : " ▲";
+  document.querySelectorAll("#listhead [data-sort]").forEach((b) => {
+    const on = b.dataset.sort === key;
+    b.setAttribute("aria-sort", on ? (state.sort.startsWith("-") ? "descending" : "ascending") : "none");
+    b.textContent = b.dataset.label + (on ? arrow : "");
+  });
 }
 
 /// The chips a row shows for its labels. In compact density there is no room
@@ -589,7 +841,7 @@ function marksHtml(i) {
 
 function metaHtml(i) {
   return `<div class="m">
-    <span class="favicon tiny feed" data-bg="${esc(tint(i.feed_title))}">${esc((i.feed_title || "?").trim()[0] || "?").toUpperCase()}</span>
+    ${feedIcon(i.feed_id, i.feed_title, "tiny feed")}
     <span class="feed">${esc(i.feed_title)}</span>
     <span class="feed faint">·</span>
     <span>${when(i.published)}</span>
@@ -597,182 +849,295 @@ function metaHtml(i) {
   </div>`;
 }
 
+/// What a row is grouped under, for the headings between rows. They follow
+/// the sort: days for date, the feed or author for those, none for title,
+/// where they would be one per row.
+function listGrouper() {
+  const sortKey = state.sort.replace(/^-/, "");
+  return sortKey === "date" ? (i) => dayKey(i.published)
+    : sortKey === "feed" ? (i) => i.feed_title || "?"
+    : sortKey === "author" ? (i) => i.author || "No author"
+    : null;
+}
+
+function rowHtml(i, paper) {
+  if (paper) {
+    // The focused card carries the whole article; the rest show an excerpt.
+    // state.current is filled in by openArticle, so a card is "loading"
+    // between the click and the fetch returning.
+    const open = state.selected === i.id;
+    const body = open
+      ? (state.current
+          ? `<div class="full"><div class="prose" data-prose="${i.id}"></div></div>`
+          : `<div class="ex">${state.failed === i.id ? "Could not load this article." : "Loading…"}</div>`)
+      : (i.excerpt ? `<div class="ex">${esc(i.excerpt)}</div>` : "");
+    return `<div class="item${i.read ? " read" : ""}" data-id="${i.id}"
+                  aria-selected="${open}" data-sel="${state.sel.has(i.id)}">
+      <div class="head">
+        ${marksHtml(i)}
+        <div class="body">
+          <div class="t">${esc(i.title)}</div>
+          ${metaHtml(i)}
+        </div>
+      </div>
+      ${body}
+      ${open ? `<div class="cardbar">
+        <button class="pill" data-open="${i.id}"${i.link ? "" : " disabled"}>Open in browser</button>
+        <button class="pill" data-collapse="${i.id}">Collapse</button>
+      </div>` : ""}
+    </div>`;
+  }
+  return `<div class="item${i.read ? " read" : ""}" data-id="${i.id}"
+                aria-selected="${state.selected === i.id}"
+                data-sel="${state.sel.has(i.id)}">
+    ${marksHtml(i)}
+    <div class="body">
+      <div class="t">${esc(i.title)}</div>
+      ${metaHtml(i)}
+    </div>
+  </div>`;
+}
+
+/// Rows and their headings, continuing from the heading `group`.
+function rowsHtml(items, group) {
+  const paper = document.documentElement.dataset.layout === "newspaper";
+  const groupOf = listGrouper();
+  let html = "";
+  for (const i of items) {
+    if (groupOf) {
+      const g = groupOf(i);
+      if (g !== group) { group = g; html += `<div class="group">${esc(g.toUpperCase())}</div>`; }
+    }
+    html += rowHtml(i, paper);
+  }
+  return html;
+}
+
+/// The row element for each article id on screen. Built once per full draw
+/// and kept up to date by the partial ones, so finding a row does not mean
+/// searching every row, which made select-all quadratic.
+let rowNodes = null;
+/// The layout the rows on screen were drawn for: cards and plain rows are
+/// different markup, so a reload after switching must draw them all again.
+let drawnLayout = null;
+function rowNode(id) {
+  if (!rowNodes) {
+    rowNodes = new Map();
+    $("#list").querySelectorAll(".item").forEach((n) => rowNodes.set(Number(n.dataset.id), n));
+  }
+  return rowNodes.get(id);
+}
+
+/// The open card in the newspaper layout holds the article itself.
+function fillOpenCard(el) {
+  if (document.documentElement.dataset.layout !== "newspaper" || !state.current) return;
+  const host = el.querySelector(`[data-prose="${state.current.id}"]`);
+  if (!host) return;
+  // Sanitised server-side by ammonia, same as the reading pane.
+  host.innerHTML = state.current.html;
+  host.querySelectorAll("a[href]").forEach((link) => {
+    link.onclick = (e) => { e.preventDefault(); openUrl(link.href); };
+  });
+}
+
+/// Draw the whole list. Only for a different list (another feed, a reload,
+/// a new sort or layout): a change to a few rows goes through redrawRows, and
+/// a new page through appendRows. Rebuilding every loaded row on each J or K
+/// got slower the further down the list had been scrolled.
 function renderList() {
   const el = $("#list");
   const q = state.query.trim().toLowerCase();
   const items = visibleItems();
+  rowNodes = null;
+  shownSel = new Set(state.sel);
+  drawnLayout = document.documentElement.dataset.layout;
 
   if (!items.length) {
     el.innerHTML = `<div class="empty">${
-      !state.scope ? "Select a feed." : q ? "Nothing matches." : "Nothing here."}</div>`;
+      !listScope() ? "Select a feed." : q ? "Nothing matches." : "Nothing here."}</div>`;
+    renderSelection();
     return;
   }
 
-  const paper = document.documentElement.dataset.layout === "newspaper";
-
-  let html = "", group = null;
-  for (const i of items) {
-    const g = dayKey(i.published);
-    if (g !== group) { group = g; html += `<div class="group">${g.toUpperCase()}</div>`; }
-
-    if (paper) {
-      // The focused card carries the whole article; the rest show an excerpt.
-      // state.current is filled in by openArticle, so a card is "loading"
-      // between the click and the fetch returning.
-      const open = state.selected === i.id;
-      const body = open
-        ? (state.current
-            ? `<div class="full"><div class="prose" data-prose="${i.id}"></div></div>`
-            : `<div class="ex">${state.failed === i.id ? "Could not load this article." : "Loading…"}</div>`)
-        : (i.excerpt ? `<div class="ex">${esc(i.excerpt)}</div>` : "");
-      html += `<div class="item${i.read ? " read" : ""}" data-id="${i.id}"
-                    aria-selected="${open}" data-sel="${state.sel.has(i.id)}">
-        <div class="head">
-          ${marksHtml(i)}
-          <div class="body">
-            <div class="t">${esc(i.title)}</div>
-            ${metaHtml(i)}
-          </div>
-        </div>
-        ${body}
-        ${open ? `<div class="cardbar">
-          <button class="pill" data-open="${i.id}"${i.link ? "" : " disabled"}>Open in browser</button>
-          <button class="pill" data-collapse="${i.id}">Collapse</button>
-        </div>` : ""}
-      </div>`;
-      continue;
-    }
-
-    html += `<div class="item${i.read ? " read" : ""}" data-id="${i.id}"
-                  aria-selected="${state.selected === i.id}"
-                  data-sel="${state.sel.has(i.id)}">
-      ${marksHtml(i)}
-      <div class="body">
-        <div class="t">${esc(i.title)}</div>
-        ${metaHtml(i)}
-      </div>
-    </div>`;
-  }
+  let html = rowsHtml(items, null);
+  if (state.more) html += `<div class="more">Loading more…</div>`;
   el.innerHTML = html;
   paint(el);
-
-  if (paper && state.current) {
-    const host = el.querySelector(`[data-prose="${state.current.id}"]`);
-    if (host) {
-      // Sanitised server-side by ammonia, same as the reading pane.
-      host.innerHTML = state.current.html;
-      host.querySelectorAll("a[href]").forEach((link) => {
-        link.onclick = (e) => { e.preventDefault(); openUrl(link.href); };
-      });
-    }
-  }
-  // Bound whether or not the article has arrived: the card shows them while
-  // it loads, and they did nothing until it had.
-  el.querySelectorAll("[data-open]").forEach((b) => {
-    b.onclick = (e) => {
-      e.stopPropagation();
-      const a = state.items.find((x) => x.id === Number(b.dataset.open));
-      if (a?.link) openUrl(a.link);
-    };
-  });
-  const collapseCard = () => {
-    state.selected = null;
-    state.current = null;
-    renderList();
-  };
-  el.querySelectorAll("[data-collapse]").forEach((b) => {
-    b.onclick = (e) => {
-      e.stopPropagation();
-      collapseCard();
-    };
-  });
-
-  const visible = items.map((i) => i.id);
-
-  el.querySelectorAll(".item").forEach((n) => {
-    n.onclick = (e) => {
-      if (e.target.closest("[data-star], [data-dot]")) return;
-      // In newspaper the article itself is inside the card, so a click on the
-      // text, a link or the card's own buttons is not a click on the card.
-      if (e.target.closest(".full, .cardbar")) return;
-      const id = Number(n.dataset.id);
-
-      if (e.shiftKey && state.anchor !== null) {
-        // Range from the anchor to here, in the order the list is showing.
-        const a = visible.indexOf(state.anchor);
-        const b = visible.indexOf(id);
-        if (a >= 0 && b >= 0) {
-          const [lo, hi] = a < b ? [a, b] : [b, a];
-          setSelection(visible.slice(lo, hi + 1));
-          // Shift-click extends the selection without moving the anchor, so a
-          // second shift-click re-ranges from the same start.
-          openArticle(id, { keepSelection: true });
-          return;
-        }
-      }
-
-      if (e.ctrlKey || e.metaKey) {
-        // Toggle one row without disturbing the reading pane.
-        const next = new Set(state.sel);
-        next.has(id) ? next.delete(id) : next.add(id);
-        setSelection(next, { anchor: id });
-        return;
-      }
-
-      // A plain click on the open card's headline closes it again. Not the
-      // second click of a double-click: that one opens the article in the
-      // browser, and closing the card underneath it would be a surprise.
-      if (paper && state.selected === id && e.detail <= 1) {
-        collapseCard();
-        return;
-      }
-
-      setSelection([id], { anchor: id });
-      openArticle(id, { keepSelection: true });
-    };
-    n.ondblclick = () => {
-      const a = state.items.find((x) => x.id === Number(n.dataset.id));
-      if (a?.link) openUrl(a.link);
-    };
-  });
-
-  el.querySelectorAll("[data-star]").forEach((b) => {
-    b.onclick = async (e) => {
-      e.stopPropagation();
-      const it = state.items.find((x) => x.id === Number(b.dataset.star));
-      if (!it) return;
-      it.starred = !it.starred;
-      await invoke("set_starred", { ids: [it.id], starred: it.starred });
-      if (state.selected === it.id) setStarButton($("#btn-star2"), it.starred);
-      renderList();
-      loadTree();
-    };
-  });
-
-  el.querySelectorAll("[data-dot]").forEach((b) => {
-    b.onclick = async (e) => {
-      e.stopPropagation();
-      const it = state.items.find((x) => x.id === Number(b.dataset.dot));
-      if (!it) return;
-      it.read = !it.read;
-      await invoke("set_read", { ids: [it.id], read: it.read });
-      renderList();
-      loadTree();
-      refreshStatus();
-    };
-  });
-
+  fillOpenCard(el);
   renderSelection();
 }
 
+/// Draw these articles' rows again, leaving the rest of the list alone. For
+/// changes that cannot move a row or its heading: read, starred, opened,
+/// labelled.
+function redrawRows(ids) {
+  const el = $("#list");
+  const paper = document.documentElement.dataset.layout === "newspaper";
+  for (const id of new Set(ids)) {
+    if (id === null || id === undefined) continue;
+    const node = rowNode(id);
+    const item = state.items.find((i) => i.id === id);
+    if (!node || !item) continue;
+    const t = document.createElement("template");
+    t.innerHTML = rowHtml(item, paper);
+    const fresh = t.content.firstElementChild;
+    paint(t.content);
+    node.replaceWith(fresh);
+    rowNodes.set(id, fresh);
+    if (paper && state.current?.id === id) fillOpenCard(el);
+  }
+}
+
+/// Add a page of articles below the ones already drawn.
+function appendRows(added) {
+  const el = $("#list");
+  if (!el.querySelector(".item")) { renderList(); return; }
+  el.querySelector(".more")?.remove();
+  if (added.length) {
+    const before = state.items[state.items.length - added.length - 1];
+    const groupOf = listGrouper();
+    const t = document.createElement("template");
+    t.innerHTML = rowsHtml(added, before && groupOf ? groupOf(before) : null);
+    paint(t.content);
+    if (rowNodes) t.content.querySelectorAll(".item").forEach((n) => rowNodes.set(Number(n.dataset.id), n));
+    el.append(t.content);
+  }
+  if (state.more) el.insertAdjacentHTML("beforeend", `<div class="more">Loading more…</div>`);
+}
+
+/// Put each row's feed icon in line with state.icons, touching nothing else.
+/// Icons are looked up in the background, a few a minute, and redrawing the
+/// whole list for each batch froze the window with thousands of rows loaded.
+function refreshRowIcons() {
+  for (const i of state.items) {
+    const icon = rowNode(i.id)?.querySelector(".m .favicon");
+    if (!icon) continue;
+    const want = state.icons[i.feed_id] || null;
+    if ((icon.tagName === "IMG" ? icon.getAttribute("src") : null) === want) continue;
+    const t = document.createElement("template");
+    t.innerHTML = feedIcon(i.feed_id, i.feed_title, "tiny feed");
+    paint(t.content);
+    icon.replaceWith(t.content);
+  }
+}
+
+function collapseCard() {
+  const was = state.selected;
+  state.selected = null;
+  state.current = null;
+  redrawRows([was]);
+}
+
+/// Clicks anywhere in the list, bound once. Handlers set on each row were
+/// set again on every row whenever the list was drawn.
+function onListClick(e) {
+  const el = $("#list");
+  const open = e.target.closest("[data-open]");
+  if (open) {
+    e.stopPropagation();
+    const a = state.items.find((x) => x.id === Number(open.dataset.open));
+    if (a?.link) openUrl(a.link);
+    return;
+  }
+  if (e.target.closest("[data-collapse]")) {
+    e.stopPropagation();
+    collapseCard();
+    return;
+  }
+  const star = e.target.closest("[data-star]");
+  if (star) {
+    e.stopPropagation();
+    toggleRowStar(Number(star.dataset.star));
+    return;
+  }
+  const dot = e.target.closest("[data-dot]");
+  if (dot) {
+    e.stopPropagation();
+    toggleRowRead(Number(dot.dataset.dot));
+    return;
+  }
+  const n = e.target.closest(".item");
+  if (!n || !el.contains(n)) return;
+  const paper = document.documentElement.dataset.layout === "newspaper";
+  // In newspaper the article itself is inside the card, so a click on the
+  // text, a link or the card's own buttons is not a click on the card.
+  if (e.target.closest(".full, .cardbar")) return;
+    const id = Number(n.dataset.id);
+
+    if (e.shiftKey && state.anchor !== null) {
+      // Range from the anchor to here, in the order the list is showing.
+      const visible = visibleItems().map((i) => i.id);
+      const a = visible.indexOf(state.anchor);
+      const b = visible.indexOf(id);
+      if (a >= 0 && b >= 0) {
+        const [lo, hi] = a < b ? [a, b] : [b, a];
+        setSelection(visible.slice(lo, hi + 1));
+        // Shift-click extends the selection without moving the anchor, so a
+        // second shift-click re-ranges from the same start.
+        openArticle(id, { keepSelection: true });
+        return;
+      }
+    }
+
+    if (e.ctrlKey || e.metaKey) {
+      // Toggle one row without disturbing the reading pane.
+      const next = new Set(state.sel);
+      next.has(id) ? next.delete(id) : next.add(id);
+      setSelection(next, { anchor: id });
+      return;
+    }
+
+    // A plain click on the open card's headline closes it again. Not the
+    // second click of a double-click: that one opens the article in the
+    // browser, and closing the card underneath it would be a surprise.
+    if (paper && state.selected === id && e.detail <= 1) {
+      collapseCard();
+      return;
+    }
+
+    setSelection([id], { anchor: id });
+    openArticle(id, { keepSelection: true });
+}
+
+async function toggleRowStar(id) {
+  const it = state.items.find((x) => x.id === id);
+  if (!it) return;
+  it.starred = !it.starred;
+  await invoke("set_starred", { ids: [it.id], starred: it.starred });
+  if (state.selected === it.id) setStarButton($("#btn-star2"), it.starred);
+  redrawRows([it.id]);
+  loadTree();
+}
+
+async function toggleRowRead(id) {
+  const it = state.items.find((x) => x.id === id);
+  if (!it) return;
+  it.read = !it.read;
+  await invoke("set_read", { ids: [it.id], read: it.read });
+  redrawRows([it.id]);
+  loadTree();
+  refreshStatus();
+}
+
+$("#list").onclick = onListClick;
+$("#list").ondblclick = (e) => {
+  const n = e.target.closest(".item");
+  if (!n) return;
+  const a = state.items.find((x) => x.id === Number(n.dataset.id));
+  if (a?.link) openUrl(a.link);
+};
+
 // --------------------------------------------------------------- reading pane
 async function openArticle(id, { keepSelection = false } = {}) {
+  const was = state.selected;
   state.selected = id;
   state.current = null;
+  state.failed = null;
   // Arriving by keyboard or by "next article" collapses the selection to the
   // one being read; a click has already set it.
   if (!keepSelection) { state.sel = new Set([id]); state.anchor = id; }
-  renderList();
+  redrawRows([was, id]);
+  renderSelection();
   $("#article").innerHTML = '<div class="empty">Loading…</div>';
 
   let a;
@@ -784,7 +1149,7 @@ async function openArticle(id, { keepSelection = false } = {}) {
     // In newspaper the reading pane is hidden; the card says it instead of
     // "Loading…" for ever.
     state.failed = id;
-    if (document.documentElement.dataset.layout === "newspaper") renderList();
+    if (document.documentElement.dataset.layout === "newspaper") redrawRows([id]);
     return;
   }
   state.failed = null;
@@ -827,10 +1192,10 @@ async function openArticle(id, { keepSelection = false } = {}) {
   // In newspaper the article is drawn inside its card, which only exists once
   // state.current is filled in.
   if (document.documentElement.dataset.layout === "newspaper") {
-    renderList();
+    redrawRows([id]);
     // Not every engine has scrollIntoView, and a missing scroll is a cosmetic
     // loss rather than a reason to throw out of the click handler.
-    const card = document.querySelector(`.item[data-id="${id}"]`);
+    const card = rowNode(id);
     card?.scrollIntoView?.({ block: "nearest" });
   }
 
@@ -838,37 +1203,46 @@ async function openArticle(id, { keepSelection = false } = {}) {
   if (it && !it.read && settingOn("reading.mark_read_on_open")) {
     it.read = true;
     await invoke("set_read", { ids: [id], read: true });
-    renderList();
+    redrawRows([id]);
     loadTree();
     refreshStatus();
   }
 }
 
-/// The rows the list is showing: `state.items` narrowed by the search box.
-/// Select-all and next/previous work on these, not on articles the search
-/// has hidden.
+/// The rows the list is showing. Select-all and next/previous work on these.
 function visibleItems() {
-  const q = state.query.trim().toLowerCase();
-  return q
-    ? state.items.filter((i) =>
-        i.title.toLowerCase().includes(q) || (i.feed_title || "").toLowerCase().includes(q))
-    : state.items;
+  // The search runs in the database now, so everything loaded matches.
+  return state.items;
 }
 
 function selectAllVisible() {
   setSelection(visibleItems().map((i) => i.id));
 }
 
-function step(delta) {
-  const items = visibleItems();
+async function step(delta) {
+  let items = visibleItems();
   if (!items.length) return;
   const idx = items.findIndex((i) => i.id === state.selected);
   // The focused article can be gone from the list entirely; start from the
   // end we are heading towards rather than off by one.
-  const next = idx < 0
+  let next = idx < 0
     ? items[delta > 0 ? 0 : items.length - 1]
     : items[idx + delta];
-  if (next) openArticle(next.id);
+  // The last loaded row is not the last article: fetch the next page and go on.
+  if (!next && idx >= 0 && state.more) {
+    const from = state.selected;
+    await loadMore();
+    if (state.selected !== from) return;
+    items = visibleItems();
+    next = items[items.findIndex((i) => i.id === from) + delta];
+  }
+  if (!next) return;
+  // J and K are about articles now. Focus left on a clicked feed made the
+  // next Delete remove that feed.
+  if (document.activeElement?.closest?.("#tree")) $("#list").focus({ preventScroll: true });
+  openArticle(next.id);
+  // openArticle has drawn the row by now. Not every engine has scrollIntoView.
+  rowNode(next.id)?.scrollIntoView?.({ block: "nearest" });
 }
 
 // -------------------------------------------------------------------- actions
@@ -912,6 +1286,7 @@ $("#btn-update").onclick = async () => {
       : `${r.new_articles} new · ${r.not_modified} unchanged${r.failed ? ` · ${r.failed} failed` : ""}`);
     await loadTree();
     await loadList();
+    await refreshStatus();
   } catch (e) {
     toast(String(e));
   } finally {
@@ -921,15 +1296,55 @@ $("#btn-update").onclick = async () => {
 };
 
 const addFeed = async () => {
-  const url = await ask({ title: "Add a feed", placeholder: "https://example.com/feed.xml" });
-  if (!url) return;
+  const address = await ask({ title: "Add a feed", placeholder: "Site or feed address, such as example.com",
+                              confirmLabel: "Add" });
+  if (!address) return;
+  // A site's address works as well as its feed's: the page is asked which
+  // feeds it has.
+  toast("Looking for the feed…");
+  let found;
+  try { found = await invoke("discover_feed", { address }); }
+  catch (e) {
+    // The address could not be checked: it asks for a password, the server
+    // is down, or it turns the checker away. It can still be added as it
+    // is; a feed that needs signing in then opens its properties for that.
+    const typed = address.includes("://") ? address.trim() : `https://${address.trim()}`;
+    const needsSignIn = String(e).includes("http 401");
+    if (!needsSignIn) {
+      const go = await ask({ title: `Could not check ${typed}. Add it anyway?`, placeholder: null,
+                             confirmLabel: "Add anyway" });
+      if (!go) return;
+    }
+    found = [{ url: typed, title: null, subscribed: false, signIn: needsSignIn }];
+  }
+  if (!found.length) return toast("No feed found at that address");
+  if (!found.some((f) => !f.subscribed)) return toast("You are already subscribed to that feed");
+  let url = found.find((f) => !f.subscribed).url;
+  if (found.length > 1) {
+    url = await choose({
+      title: "This site has more than one feed",
+      options: found.map((f) => ({
+        label: f.title || f.url, sub: f.title ? f.url : "", value: f.url,
+        disabled: f.subscribed, note: f.subscribed ? "subscribed" : "",
+      })),
+    });
+    if (!url) return;
+  }
   try {
     const id = await invoke("add_feed", { url, parentId: null });
     await loadTree();
+    if (found.find((f) => f.url === url)?.signIn) {
+      toast("This feed needs a user name and password");
+      return openFeedSettings(id);
+    }
     toast("Added, fetching…");
     const r = await invoke("update_feed_now", { id });
     await loadTree();
     await loadList();
+    // The icon, now that the first fetch has told us where the site is.
+    invoke("refresh_feed_icon", { id })
+      .then(async (found) => { if (found) { await loadIcons(); await loadTree(); refreshRowIcons(); } })
+      .catch(() => {});
     toast(r.failed ? "Added, but the first fetch failed" : `Added, ${r.new_articles} articles`);
   } catch (e) { toast(String(e)); }
 };
@@ -998,7 +1413,7 @@ const toggleStar = async ({ onlyShown = false } = {}) => {
   rows.forEach((i) => { i.starred = starred; });
   if (state.current && ids.includes(state.current.id)) state.current.starred = starred;
   if (ids.includes(state.selected)) setStarButton($("#btn-star2"), starred);
-  renderList(); loadTree();
+  redrawRows(ids); loadTree();
 };
 $("#btn-star").onclick = () => toggleStar();
 // The reading pane's star is about the article on screen, whatever else is
@@ -1014,7 +1429,7 @@ $("#btn-toggleread").onclick = async () => {
   const read = rows.length ? !rows.every((i) => i.read) : false;
   await invoke("set_read", { ids, read });
   rows.forEach((i) => { i.read = read; });
-  renderList(); loadTree(); refreshStatus();
+  redrawRows(ids); loadTree(); refreshStatus();
 };
 
 $("#btn-delete").onclick = () => deleteArticles(targetIds());
@@ -1371,12 +1786,12 @@ document.addEventListener("contextmenu", async (e) => {
         { label: allStarred ? "Remove stars" : "Star all", run: async () => {
             await invoke("set_starred", { ids, starred: !allStarred });
             rows.forEach((i) => { i.starred = !allStarred; });
-            renderList(); loadTree();
+            redrawRows(ids); loadTree();
           }},
         { label: allRead ? "Mark as unread" : "Mark as read", run: async () => {
             await invoke("set_read", { ids, read: !allRead });
             rows.forEach((i) => { i.read = !allRead; });
-            renderList(); loadTree(); refreshStatus();
+            redrawRows(ids); loadTree(); refreshStatus();
           }},
         { label: "Labels", items: () => labelMenuItems() },
         "-",
@@ -1398,12 +1813,12 @@ document.addEventListener("contextmenu", async (e) => {
           art.starred = !art.starred;
           await invoke("set_starred", { ids: [id], starred: art.starred });
           if (state.selected === id) setStarButton($("#btn-star2"), art.starred);
-          renderList(); loadTree();
+          redrawRows([id]); loadTree();
         }},
       { label: art.read ? "Mark as unread" : "Mark as read", run: async () => {
           art.read = !art.read;
           await invoke("set_read", { ids: [id], read: art.read });
-          renderList(); loadTree(); refreshStatus();
+          redrawRows([id]); loadTree(); refreshStatus();
         }},
       { label: "Labels", items: () => labelMenuItems() },
       "-",
@@ -1462,7 +1877,7 @@ document.addEventListener("contextmenu", async (e) => {
     { label: "Add feed…", run: addFeed },
     { label: "New folder…", run: () => $("#btn-addfolder").click() },
     "-",
-    { label: "Settings…", hint: "Ctrl+,", run: () => openSettings() },
+    { label: "Settings…", hint: keyHint("settings"), run: () => openSettings() },
     { label: "Menu", items: () => appMenu() },
   ]);
 });
@@ -1494,7 +1909,7 @@ function appMenu() {
 
   return [
     { label: "Add", items: [
-      { label: "Feed…", hint: "Ctrl+N", run: addFeed },
+      { label: "Feed…", hint: keyHint("addFeed"), run: addFeed },
       { label: "Folder…", run: () => $("#btn-addfolder").click() },
     ]},
     "-",
@@ -1517,6 +1932,24 @@ function appMenu() {
         { label: "Classic", checked: layout === "classic", run: () => setLayout("classic") },
         { label: "Newspaper", checked: layout === "newspaper", run: () => setLayout("newspaper") },
       ]},
+      { label: "Text size", items: [
+        { label: "Larger", hint: keyHint("textBigger"), run: textBigger },
+        { label: "Smaller", hint: keyHint("textSmaller"), run: textSmaller },
+        { label: "Reset", hint: keyHint("textReset"), run: textReset },
+      ]},
+      { label: "Sort by", items: () => {
+        const key = state.sort.replace(/^-/, "");
+        const desc = state.sort.startsWith("-");
+        return [
+          ...[["date", "Date"], ["title", "Title"], ["author", "Author"], ["feed", "Feed"]].map(([k, name]) => ({
+            label: name, checked: key === k,
+            run: () => setSort(desc ? `-${k}` : k),
+          })),
+          "-",
+          { label: "Ascending", checked: !desc, run: () => setSort(key) },
+          { label: "Descending", checked: desc, run: () => setSort(`-${key}`) },
+        ];
+      }},
       "-",
       { label: "Toolbars", items: () => [
         ...Object.entries(TOOLBARS).map(([k, spec]) => ({
@@ -1530,24 +1963,24 @@ function appMenu() {
         run: () => $("#cats-head").click() },
     ]},
     { label: "Feeds", items: [
-      { label: "Update all", hint: "F5", run: () => $("#btn-update").click() },
+      { label: "Update all", hint: keyHint("update"), run: () => $("#btn-update").click() },
       { label: "Update this feed", run: () => $("#btn-refreshone").click() },
       "-",
       { label: "Feed properties…", disabled: !currentFeedId(),
         run: () => openFeedSettings(currentFeedId()) },
     ]},
     { label: "News", items: [
-      { label: "Mark all as read", hint: "Shift+M", run: () => $("#btn-listmarkall").click() },
-      { label: "Mark selected read", hint: "M", run: () => $("#btn-toggleread").click() },
-      { label: "Star selected", hint: "S", run: () => $("#btn-star").click() },
-      { label: "Labels", hint: "L", items: () => labelMenuItems() },
+      { label: "Mark all as read", hint: keyHint("markAllRead"), run: () => $("#btn-listmarkall").click() },
+      { label: "Mark selected read", hint: keyHint("toggleRead"), run: () => $("#btn-toggleread").click() },
+      { label: "Star selected", hint: keyHint("star"), run: () => $("#btn-star").click() },
+      { label: "Labels", hint: keyHint("labels"), items: () => labelMenuItems() },
       "-",
-      { label: "Select all", hint: "Ctrl+A", run: selectAllVisible },
-      { label: "Delete selected", hint: "Del", danger: true, run: () => $("#btn-delete").click() },
-      { label: "Undo", hint: "Ctrl+Z", disabled: !undoStack.length, run: undo },
+      { label: "Select all", hint: keyHint("selectAll"), run: selectAllVisible },
+      { label: "Delete selected", hint: keyHint("delete"), danger: true, run: () => $("#btn-delete").click() },
+      { label: "Undo", hint: keyHint("undo"), disabled: !undoStack.length, run: undo },
     ]},
     { label: "Tools", items: [
-      { label: "Settings…", hint: "Ctrl+,", run: () => openSettings() },
+      { label: "Settings…", hint: keyHint("settings"), run: () => openSettings() },
       { label: "Filters…", run: () => openSettings("filters") },
       { label: "Labels…", run: () => openSettings("labels") },
       "-",
@@ -1561,7 +1994,7 @@ function appMenu() {
     ]},
     "-",
     { label: "Hide to tray", run: () => getCurrentWindow().hide() },
-    { label: "Exit", hint: "Ctrl+Q", run: () => invoke("quit_app") },
+    { label: "Exit", hint: keyHint("quit"), run: () => invoke("quit_app") },
   ];
 }
 
@@ -1666,13 +2099,14 @@ const SETTING_DEFAULTS = {
   "startup.minimized": "0",
   "startup.close_to_tray": "0",
   "startup.minimize_to_tray": "0",
+  "tray.show_unread": "1",
   "updates.repo": "masterrite/SnapRSS",
   "updates.auto": "1",
 };
 
 let sheetEl = null;
 
-function closeSheet() { sheetEl?.remove(); sheetEl = null; }
+function closeSheet() { sheetEl?.remove(); sheetEl = null; keyCapture = null; }
 
 function sw(key, on) {
   return `<span class="sw" role="switch" tabindex="0" aria-checked="${!!on}" data-sw="${key}"><i></i></span>`;
@@ -1772,6 +2206,7 @@ async function openSettings(page = "general") {
   let renderTicket = 0;
   const render = async (k) => {
     page = k;
+    keyCapture = null;
     const ticket = ++renderTicket;
     nav.querySelectorAll("button").forEach((b) =>
       b.setAttribute("aria-current", String(b.dataset.page === k)));
@@ -1801,6 +2236,7 @@ async function openSettings(page = "general") {
       closeSheet();
       toast("Settings saved");
       await loadTree(); await loadList();
+      refreshStatus().catch(() => {}); // also redraws the tray's count
     } catch (e) { toast(String(e)); }
   };
   // Bound to this sheet. Checking only "is a sheet open" left the listener of
@@ -1855,6 +2291,10 @@ async function settingsPage(k, v) {
       <label>Minimising hides it to the tray</label>
       ${sw("startup.minimize_to_tray", on("startup.minimize_to_tray"))}
     </div>
+    <div class="fld">
+      <label>Show the unread count on the tray icon</label>
+      ${sw("tray.show_unread", on("tray.show_unread"))}
+    </div>
 
     <div class="grp">SUBSCRIPTIONS</div>
     <div class="fld">
@@ -1884,7 +2324,17 @@ async function settingsPage(k, v) {
       <label>Categories panel</label>
       ${sw("_cats", $("#cats-head").getAttribute("aria-expanded") === "true")}
     </div>
-    <div class="fld"><span class="note">Stored on this computer.</span></div>`;
+
+    <div class="grp">READING PANE</div>
+    <div class="fld">
+      <label>Article text size</label>
+      <span class="grow1"></span>
+      <button class="mini" data-textact="smaller" title="Smaller (${esc(keyHint("textSmaller") || "")})">A&#8722;</button>
+      <span class="textsize" data-textsize>${Math.round(textScale() * 100)}%</span>
+      <button class="mini" data-textact="bigger" title="Larger (${esc(keyHint("textBigger") || "")})">A+</button>
+      <button class="pill" data-textact="reset">Reset</button>
+    </div>
+    <div class="fld"><span class="note">Stored on this computer. Ctrl + mouse wheel over an article works too.</span></div>`;
 
   if (k === "toolbars") {
     const cfg = toolbarConfig();
@@ -2049,38 +2499,34 @@ async function settingsPage(k, v) {
     </div>`;
   }
 
-  if (k === "shortcuts") return `
-    <div class="grp">READING</div>
-    <div class="keys">
-      <kbd>J</kbd><span>Next article</span>
-      <kbd>K</kbd><span>Previous article</span>
-      <kbd>B</kbd><span>Open in browser</span>
-      <kbd>Enter</kbd><span>Open in browser</span>
-    </div>
-    <div class="grp">MARKING</div>
-    <div class="keys">
-      <kbd>S</kbd><span>Star or unstar</span>
-      <kbd>M</kbd><span>Toggle read</span>
-      <kbd>L</kbd><span>Labels</span>
-      <kbd>Shift M</kbd><span>Mark all read</span>
-      <kbd>Del</kbd><span>Delete</span>
-    </div>
-    <div class="grp">SELECTION</div>
-    <div class="keys">
-      <kbd>Ctrl click</kbd><span>Add or remove one</span>
-      <kbd>Shift click</kbd><span>Select a range</span>
-      <kbd>Shift J / K</kbd><span>Extend the selection</span>
-      <kbd>Ctrl A</kbd><span>Select all</span>
-      <kbd>Esc</kbd><span>Clear the selection</span>
-    </div>
-    <div class="grp">ELSEWHERE</div>
-    <div class="keys">
-      <kbd>/</kbd><span>Search</span>
-      <kbd>F5</kbd><span>Update all</span>
-      <kbd>Ctrl ,</kbd><span>Settings</span>
-      <kbd>Ctrl N</kbd><span>Add feed</span>
-      <kbd>Ctrl Z</kbd><span>Undo the last delete</span>
-    </div>`;
+  if (k === "shortcuts") {
+    const map = keymap();
+    const rows = (ids) => ids.map((id) => {
+      const [, label, def] = KEY_ACTIONS.find((a) => a[0] === id);
+      const cur = map[id];
+      return `<span>${esc(label)}</span>
+        <button class="keybtn" data-rebind="${id}" title="Change">${cur ? `<kbd>${esc(keyLabel(cur))}</kbd>` : '<span class="faint">none</span>'}</button>
+        ${cur !== def
+          ? `<button class="mini" data-keyreset="${id}" title="Back to ${esc(keyLabel(def))}">&#8634;</button>`
+          : "<span></span>"}`;
+    }).join("");
+    return KEY_GROUPS.map(([g, ids]) => `
+      <div class="grp">${g}</div>
+      <div class="keyedit">${rows(ids)}</div>`).join("") + `
+      <div class="grp">FIXED</div>
+      <div class="keys">
+        <kbd>Enter</kbd><span>Open in browser</span>
+        <kbd>Esc</kbd><span>Clear the selection</span>
+        <kbd>Ctrl click</kbd><span>Add or remove one</span>
+        <kbd>Shift click</kbd><span>Select a range</span>
+        <kbd>&#8592; &#8594;</kbd><span>Fold and unfold a folder</span>
+      </div>
+      <div class="fld">
+        <span class="note grow1">Click a shortcut, then press the new key. Backspace removes it, Esc cancels.
+          Stored on this computer.</span>
+        <button class="pill" data-keyresetall>Reset all</button>
+      </div>`;
+  }
 
   if (k === "updates") return `
     <div class="grp">UPDATES</div>
@@ -2106,9 +2552,7 @@ async function settingsPage(k, v) {
       <div class="appname">SnapRSS</div>
       <div class="note mt5" data-version>Version ${esc(APP_VERSION)}</div>
     </div>
-    <div class="note about">
-      Apache-2.0. Imports QuiteRSS databases and OPML.
-    </div>`;
+    <div class="note about">Apache-2.0.</div>`;
 }
 
 /// Wire the controls on whichever page is showing. Called on every render
@@ -2164,6 +2608,68 @@ function wireSheet(host, pending, render) {
       host.querySelectorAll("[data-density-pick] button").forEach((o) =>
         o.setAttribute("aria-pressed", String(o === b)));
     });
+
+  host.querySelectorAll("[data-rebind]").forEach((b) => {
+    b.onclick = () => {
+      const id = b.dataset.rebind;
+      host.querySelectorAll("[data-rebind]").forEach((o) => o.removeAttribute("aria-pressed"));
+      b.setAttribute("aria-pressed", "true");
+      b.innerHTML = '<span class="faint">Press a key…</span>';
+      keyCapture = (e) => {
+        // Settings went away some other way: stop listening, let the key through.
+        if (!b.isConnected) { keyCapture = null; return; }
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (e.key === "Escape") { keyCapture = null; render("shortcuts"); return; }
+        const map = keymap();
+        if (e.key === "Backspace" && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+          keyCapture = null;
+          map[id] = "";
+          saveKeymap(map);
+          render("shortcuts");
+          return;
+        }
+        const combo = comboOf(e);
+        if (!combo) return; // a modifier on its own: keep waiting
+        if (["Enter", "Tab", "Shift+Tab"].includes(combo)) {
+          toast(`${combo} is kept for the keyboard's usual job`);
+          return;
+        }
+        keyCapture = null;
+        // One key, one job: whatever had it gives it up.
+        const other = KEY_ACTIONS.find(([o]) => o !== id && map[o] === combo);
+        if (other) {
+          map[other[0]] = "";
+          toast(`${keyLabel(combo)} moved from “${other[1]}”`);
+        }
+        map[id] = combo;
+        saveKeymap(map);
+        render("shortcuts");
+      };
+    };
+  });
+  host.querySelectorAll("[data-keyreset]").forEach((b) => {
+    b.onclick = () => {
+      const id = b.dataset.keyreset;
+      const map = keymap();
+      const def = KEY_ACTIONS.find((a) => a[0] === id)[2];
+      const other = KEY_ACTIONS.find(([o]) => o !== id && map[o] === def);
+      if (other) map[other[0]] = "";
+      map[id] = def;
+      saveKeymap(map);
+      render("shortcuts");
+    };
+  });
+  host.querySelector("[data-keyresetall]") &&
+    (host.querySelector("[data-keyresetall]").onclick = () => {
+      try { localStorage.removeItem("keymap"); } catch {}
+      refreshKeyTips();
+      render("shortcuts");
+    });
+
+  host.querySelectorAll("[data-textact]").forEach((b) => {
+    b.onclick = () => ({ bigger: textBigger, smaller: textSmaller, reset: textReset })[b.dataset.textact]();
+  });
 
   host.querySelectorAll("[data-act]").forEach((b) => {
     b.onclick = async () => {
@@ -2433,7 +2939,7 @@ const FIELD_NAMES = {
 };
 const ACTION_NAMES = {
   mark_read: "Mark as read", add_star: "Add a star", delete: "Delete",
-  add_label: "Add a label",
+  add_label: "Add a label", play_sound: "Play a sound", notify: "Show a notification",
 };
 
 /// The editor for one filter. Conditions and actions are rows you add and
@@ -2520,6 +3026,11 @@ async function editFilter(existing, labels) {
                      ? labels.map((l) => `<option value="${l.id}"${String(a.params) === String(l.id) ? " selected" : ""}>${esc(l.name)}</option>`).join("")
                      : '<option value="">no labels yet</option>'}
                  </select>`
+              : a.action === "play_sound"
+              ? `<input type="text" data-av="${i}" class="grow1" value="${esc(a.params || "")}"
+                        placeholder="sound file" spellcheck="false">
+                 <button class="mini" data-abrowse="${i}" title="Choose a sound file">…</button>
+                 <button class="mini" data-aplay="${i}" title="Play it">&#9654;</button>`
               : ""}
             <span class="grow"></span>
             <button class="mini danger" data-adel="${i}" title="Remove"
@@ -2571,12 +3082,35 @@ async function editFilter(existing, labels) {
         el.onchange = () => {
           const i = +el.dataset.af;
           model.actions[i].action = el.value;
-          model.actions[i].params = el.value === "add_label" ? (labels[0]?.id ?? null) : null;
+          model.actions[i].params = el.value === "add_label" ? (labels[0]?.id ?? null)
+            : el.value === "play_sound" ? "" : null;
           draw();
         };
       });
       box.querySelectorAll("[data-av]").forEach((el) => {
-        el.onchange = () => { model.actions[+el.dataset.av].params = el.value; };
+        const set = () => { model.actions[+el.dataset.av].params = el.value; };
+        el.onchange = set; el.oninput = set;
+      });
+      box.querySelectorAll("[data-abrowse]").forEach((b) => {
+        b.onclick = async () => {
+          let picked;
+          try {
+            picked = await dialog.open({
+              title: "Sound to play", multiple: false, directory: false,
+              filters: [{ name: "Sounds", extensions: ["wav", "mp3", "ogg", "oga", "opus", "m4a", "aac", "flac", "wma"] }],
+            });
+          } catch (e) { return toast(String(e)); }
+          if (!picked) return;
+          model.actions[+b.dataset.abrowse].params = String(picked.path ?? picked);
+          draw();
+        };
+      });
+      box.querySelectorAll("[data-aplay]").forEach((b) => {
+        b.onclick = async () => {
+          const path = model.actions[+b.dataset.aplay].params;
+          if (!path) return toast("Choose a sound file first");
+          try { await invoke("test_sound", { path }); } catch (e) { toast(String(e)); }
+        };
       });
       box.querySelectorAll("[data-adel]").forEach((b) => {
         b.onclick = () => { model.actions.splice(+b.dataset.adel, 1); draw(); };
@@ -2590,6 +3124,8 @@ async function editFilter(existing, labels) {
         if (!model.name.trim()) return box.querySelector("[data-name]").focus();
         if (model.actions.some((a) => a.action === "add_label" && !a.params))
           return toast("That filter adds a label, but there are no labels yet");
+        if (model.actions.some((a) => a.action === "play_sound" && !String(a.params || "").trim()))
+          return toast("Choose the sound file to play");
         done({
           id: model.id,
           name: model.name.trim(),
@@ -2735,6 +3271,20 @@ async function openFeedSettings(id) {
             f.updated ? " &middot; updated " + new Date(f.updated).toLocaleString() : ""}</span>
         </div>
 
+        <div class="grp">SIGN-IN</div>
+        <div class="fld"><span class="note">For feeds that ask for a user name and password. Shared by
+          every feed on the same site.</span></div>
+        <div class="fld">
+          <label for="f-user" class="flabel">User name</label>
+          <input id="f-user" type="text" class="grow1" autocomplete="off" spellcheck="false"
+                 value="${esc(f.signInUser || "")}">
+        </div>
+        <div class="fld">
+          <label for="f-pass" class="flabel">Password</label>
+          <input id="f-pass" type="password" class="grow1" autocomplete="new-password"
+                 placeholder="${f.hasPassword ? "Saved; type to change" : ""}">
+        </div>
+
         <div class="grp">READING</div>
         <div class="fld">
           <label>Show the feed summary only</label>
@@ -2822,6 +3372,9 @@ async function openFeedSettings(id) {
     neverDeleteUnread: flags.keepUnread,
     neverDeleteStarred: flags.keepStarred,
     neverDeleteLabeled: flags.keepLabeled,
+    signInUser: back.querySelector("#f-user").value.trim(),
+    signInPassword: back.querySelector("#f-pass").value || null,
+    hasPassword: f.hasPassword,
     status: f.status,
     updated: f.updated,
     articleCount: f.articleCount,
@@ -3218,23 +3771,198 @@ $("#cats-head").onclick = () => {
   localStorage.setItem("catsOpen", String(open));
 };
 
-$("#q").oninput = (e) => { state.query = e.target.value; renderList(); };
+// The search runs over the whole scope in the database, a moment after the
+// last keystroke rather than on every one.
+let searchTimer = null;
+$("#q").oninput = (e) => {
+  state.query = e.target.value;
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => { $("#list").scrollTop = 0; loadList(); }, 250);
+};
+// Ctrl + wheel over an article changes its text size, as in a browser.
+for (const sel of ["#article", "#list"]) {
+  $(sel).addEventListener("wheel", (e) => {
+    if (!e.ctrlKey) return;
+    if (sel === "#list" && !e.target.closest(".full")) return;
+    e.preventDefault();
+    if (e.deltaY < 0) textBigger(); else if (e.deltaY > 0) textSmaller();
+  }, { passive: false });
+}
+$("#list").addEventListener("scroll", () => {
+  const el = $("#list");
+  if (el.scrollTop + el.clientHeight > el.scrollHeight - 600) loadMore();
+});
+document.querySelectorAll("#listhead [data-sort]").forEach((b) => {
+  b.onclick = () => toggleSort(b.dataset.sort);
+});
+paintSortHead();
+
+// ------------------------------------------------------------- shortcuts
+// Every rebindable shortcut: what it is called, its default key, and what it
+// does. The Shortcuts page edits `localStorage.keymap`, which holds only the
+// keys changed from these defaults.
+const KEY_ACTIONS = [
+  ["next",        "Next article",                 "J",       () => step(1)],
+  ["prev",        "Previous article",             "K",       () => step(-1)],
+  ["extendNext",  "Extend the selection down",    "Shift+J", () => extendSelection(1)],
+  ["extendPrev",  "Extend the selection up",      "Shift+K", () => extendSelection(-1)],
+  ["openBrowser", "Open in browser",              "B",       () => $("#openext").click()],
+  ["star",        "Star or unstar",               "S",       () => toggleStar()],
+  ["toggleRead",  "Toggle read",                  "M",       () => $("#btn-toggleread").click()],
+  ["markAllRead", "Mark all read",                "Shift+M", () => $("#btn-listmarkall").click()],
+  ["labels",      "Labels",                       "L",       () => openLabelMenu()],
+  ["delete",      "Delete",                       "Delete",  () => deleteByFocus()],
+  ["selectAll",   "Select all",                   "Ctrl+A",  () => selectAllVisible()],
+  ["undo",        "Undo the last delete",         "Ctrl+Z",  () => undo()],
+  ["search",      "Search",                       "/",       () => $("#q").focus()],
+  ["update",      "Update all",                   "F5",      () => $("#btn-update").click()],
+  ["addFeed",     "Add feed",                     "Ctrl+N",  () => addFeed()],
+  ["settings",    "Settings",                     "Ctrl+,",  () => openSettings()],
+  ["textBigger",  "Larger text",                  "Ctrl+=",  () => textBigger()],
+  ["textSmaller", "Smaller text",                 "Ctrl+-",  () => textSmaller()],
+  ["textReset",   "Normal text size",             "Ctrl+0",  () => textReset()],
+  ["quit",        "Exit",                         "Ctrl+Q",  () => invoke("quit_app")],
+];
+const KEY_GROUPS = [
+  ["READING", ["next", "prev", "openBrowser", "textBigger", "textSmaller", "textReset"]],
+  ["MARKING", ["star", "toggleRead", "labels", "markAllRead", "delete", "undo"]],
+  ["SELECTION", ["extendNext", "extendPrev", "selectAll"]],
+  ["ELSEWHERE", ["search", "update", "addFeed", "settings", "quit"]],
+];
+/// Second keys that come free with a default: Ctrl and the + key, which
+/// is Shift and = on most keyboards, or the number pad's +.
+const KEY_EXTRAS = { textBigger: ["Ctrl++"] };
+
+/// The key that was pressed, as the keymap writes it: "Ctrl+Shift+J", "F5".
+/// Shift is named only where it does not already change the character, so
+/// Shift+= arrives as "+". The Windows key is its own modifier, not Ctrl:
+/// Win+Shift+S (the screenshot tool) starred the open article when it was
+/// read as a plain S.
+function comboOf(e) {
+  let k = e.key;
+  if (!k || ["Control", "Shift", "Alt", "Meta", "OS", "AltGraph"].includes(k)) return null;
+  if (k === " ") k = "Space";
+  if (k.length === 1) k = k.toUpperCase();
+  const mods = [];
+  if (e.ctrlKey) mods.push("Ctrl");
+  if (e.altKey) mods.push("Alt");
+  if (e.metaKey) mods.push("Win");
+  if (e.shiftKey && (/^[A-Z0-9]$/.test(k) || k.length > 1)) mods.push("Shift");
+  return [...mods, k].join("+");
+}
+
+function keymap() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem("keymap") || "{}") || {}; } catch {}
+  const map = {};
+  for (const [id, , def] of KEY_ACTIONS) map[id] = id in saved ? saved[id] : def;
+  return map;
+}
+function saveKeymap(map) {
+  const changed = {};
+  for (const [id, , def] of KEY_ACTIONS) if (map[id] !== def) changed[id] = map[id];
+  try { localStorage.setItem("keymap", JSON.stringify(changed)); } catch {}
+  refreshKeyTips();
+}
+function actionFor(combo) {
+  const map = keymap();
+  for (const [id] of KEY_ACTIONS) if (map[id] && map[id] === combo) return id;
+  // Second keys only after every chosen one: a key the user gave to another
+  // action belongs to that action.
+  for (const [id, , def] of KEY_ACTIONS) {
+    if ((KEY_EXTRAS[id] || []).includes(combo) && map[id] === def) return id;
+  }
+  return null;
+}
+/// How a key reads in menus and tooltips.
+function keyLabel(combo) {
+  return (combo || "").replace(/(^|\+)Delete$/, "$1Del");
+}
+function keyHint(id) { return keyLabel(keymap()[id]) || undefined; }
+
+/// Tooltips name the shortcut, and follow it when it is changed. Buttons are
+/// matched by the default key their tooltip was written with.
+function refreshKeyTips() {
+  const byDefault = Object.fromEntries(KEY_ACTIONS.map(([id, , def]) => [keyLabel(def), id]));
+  const map = keymap();
+  document.querySelectorAll("[title]").forEach((el) => {
+    if (!el.dataset.keyaction) {
+      const m = el.title.match(/^(.*) \(([^()]+)\)$/);
+      if (!m || !byDefault[m[2]]) return;
+      el.dataset.keyaction = byDefault[m[2]];
+      el.dataset.tip = m[1];
+    }
+    const k = keyLabel(map[el.dataset.keyaction]);
+    el.title = k ? `${el.dataset.tip} (${k})` : el.dataset.tip;
+  });
+}
+
+function extendSelection(dir) {
+  const items = visibleItems();
+  const idx = items.findIndex((i) => i.id === state.selected);
+  // With nothing open, start at the end being extended from.
+  const next = idx < 0 ? items[dir > 0 ? 0 : items.length - 1] : items[idx + dir];
+  if (next) {
+    const sel = new Set(state.sel);
+    sel.add(next.id);
+    setSelection(sel);
+    openArticle(next.id, { keepSelection: true });
+  }
+}
+
+function openLabelMenu() {
+  // Anchored to the list selection rather than to the button, because the
+  // button can be hidden by a customised toolbar.
+  const row = document.querySelector('.item[aria-selected="true"]')
+           || document.querySelector(".item");
+  const r = (row || $("#listbar")).getBoundingClientRect();
+  showCtx(r.left + 40, r.top + 20, labelMenuItems(), "Labels");
+}
+
+function deleteByFocus() {
+  // With a feed selected in the tree, Delete means that feed. Otherwise it
+  // means the articles. Previously it always meant the articles, so
+  // pressing Delete over the tree quietly deleted whatever was open.
+  // The row with keyboard focus, which need not be the selected one.
+  const focused = document.activeElement?.closest?.("#tree .node");
+  if (focused) removeNode(focused);
+  else if (document.activeElement?.closest("#tree")) $("#btn-removefeed").click();
+  else $("#btn-delete").click();
+}
+
+// Capturing, and registered before Settings' own Esc handler, so a key
+// being recorded reaches the Shortcuts page and nothing else.
+document.addEventListener("keydown", (e) => { if (keyCapture) keyCapture(e); }, true);
+
+/// Whether a dialog or sheet is open. They are all added straight to
+/// <body>, so only its own children are looked at: searching the whole page
+/// for one on every key press took milliseconds with thousands of articles
+/// loaded.
+function dialogUp() {
+  for (const el of document.body.children) {
+    if (el.classList.contains("modal-back") || el.classList.contains("sheet-back")
+        || el.getAttribute("aria-modal") === "true") return true;
+  }
+  return false;
+}
 
 document.addEventListener("keydown", (e) => {
+  if (keyCapture) return;
+  // Handled already, by the focused tree row for one: Space there opened the
+  // feed and then, bound to "Next article", moved on as well.
+  if (e.defaultPrevented) return;
+  const dialog = dialogUp();
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || e.target.isContentEditable;
-  if (e.key === "/" && !typing) { e.preventDefault(); $("#q").focus(); return; }
-  if (typing) { if (e.key === "Escape") e.target.blur(); return; }
+  // Esc in a dialog's field closes the dialog; elsewhere it leaves the field.
+  if (typing && !(dialog && e.key === "Escape")) { if (e.key === "Escape") e.target.blur(); return; }
+  const combo = comboOf(e);
+  const action = combo && actionFor(combo);
 
-  // Ctrl chords only when Ctrl is the only modifier besides Shift. Ctrl+Alt is
-  // what screenshot tools bind (Ctrl+Alt+A for WeChat, QQ and others), and
-  // on Windows AltGr arrives as Ctrl+Alt too; Ctrl+Alt+A used to select every
-  // article in the list, turning the next star, read or delete into a bulk one.
-  const ctrl = (e.ctrlKey || e.metaKey) && !e.altKey;
   // Settings, feed properties and every dialog own the keyboard while open.
   // Without this, a key pressed in a dialog also acted on the article list
   // behind it: S starred, Delete deleted, Enter opened the browser.
-  if (document.querySelector('[aria-modal="true"], .modal-back')) {
-    if (ctrl && e.key.toLowerCase() === "q") { e.preventDefault(); invoke("quit_app"); }
+  if (dialog) {
+    if (action === "quit") { e.preventDefault(); invoke("quit_app"); }
     // Esc closes the topmost dialog. Settings handles its own; this covers
     // Feed properties and dialogs opened from the sidebar.
     if (e.key === "Escape") {
@@ -3244,86 +3972,43 @@ document.addEventListener("keydown", (e) => {
     }
     return;
   }
-  if (ctrl && e.key === ",") { e.preventDefault(); openSettings(); return; }
-  if (ctrl && e.key.toLowerCase() === "z") { e.preventDefault(); undo(); return; }
-  if (ctrl && e.key.toLowerCase() === "q") { e.preventDefault(); invoke("quit_app"); return; }
-  if (ctrl && e.key.toLowerCase() === "n") { e.preventDefault(); addFeed(); return; }
 
-  // Ctrl/Cmd+A selects everything in the list rather than the page's text.
-  if (ctrl && !e.shiftKey && e.key.toLowerCase() === "a") {
+  if (action) {
+    // Enter and Delete on a focused button or menu belong to that element.
     e.preventDefault();
-    selectAllVisible();
+    KEY_ACTIONS.find((a) => a[0] === action)[3]();
     return;
   }
+
+  // Not rebindable: Escape and Enter keep their usual meanings.
   if (e.key === "Escape" && state.sel.size > 1) {
     setSelection(state.selected ? [state.selected] : []);
     return;
   }
-  // Shift+J / Shift+K extend the selection while moving.
-  if (e.shiftKey && /^[jk]$/i.test(e.key)) {
-    e.preventDefault();
-    const dir = e.key.toLowerCase() === "j" ? 1 : -1;
-    const items = visibleItems();
-    const idx = items.findIndex((i) => i.id === state.selected);
-    const next = items[(idx < 0 ? 0 : idx) + dir];
-    if (next) {
-      const sel = new Set(state.sel);
-      sel.add(next.id);
-      setSelection(sel);
-      openArticle(next.id, { keepSelection: true });
+  if (combo === "Enter") {
+    // Enter on a button, a tree row or a menu item belongs to that element;
+    // opening the article as well sent it to the browser twice, or on top
+    // of switching feeds.
+    const t = e.target;
+    const plain = t === document.body || t.closest?.("#list, #article");
+    if (plain && !t.closest?.("button, a, [role=button], select") && settingOn("reading.enter_opens_browser")) {
+      $("#openext").click();
     }
-    return;
   }
-  if (e.shiftKey && e.key.toLowerCase() === "m") {
-    e.preventDefault();
-    $("#btn-listmarkall").click();
-    return;
-  }
+});
 
-  // Single-key shortcuts are single keys only. Without this, any chord that
-  // ends in one of these letters fired it too: Win+Shift+S (the Windows
-  // screenshot tool) starred the open article, Ctrl+M toggled read.
-  if (e.ctrlKey || e.metaKey || e.altKey) return;
-
-  switch (e.key.toLowerCase()) {
-    case "j": step(1); break;
-    case "k": step(-1); break;
-    case "s": toggleStar(); break;
-    case "m": $("#btn-toggleread").click(); break;
-    case "b": $("#openext").click(); break;
-    case "enter": {
-      // Enter on a button, a tree row or a menu item belongs to that element;
-      // opening the article as well sent it to the browser twice, or on top
-      // of switching feeds.
-      const t = e.target;
-      const plain = t === document.body || t.closest?.("#list, #article");
-      if (plain && !t.closest?.("button, a, [role=button], select") && settingOn("reading.enter_opens_browser")) {
-        $("#openext").click();
-      }
-      break;
-    }
-    case "delete": {
-      // With a feed selected in the tree, Delete means that feed. Otherwise it
-      // means the articles. Previously it always meant the articles, so
-      // pressing Delete over the tree quietly deleted whatever was open.
-      // The row with keyboard focus, which need not be the selected one.
-      const focused = document.activeElement?.closest?.("#tree .node");
-      if (focused) removeNode(focused);
-      else if (document.activeElement?.closest("#tree")) $("#btn-removefeed").click();
-      else $("#btn-delete").click();
-      break;
-    }
-    case "l": {
-      // Anchored to the list selection rather than to the button, because the
-      // button can be hidden by a customised toolbar.
-      const row = document.querySelector('.item[aria-selected="true"]')
-               || document.querySelector(".item");
-      const r = (row || $("#listbar")).getBoundingClientRect();
-      showCtx(r.left + 40, r.top + 20, labelMenuItems(), "Labels");
-      break;
-    }
+// A filter's sound, when the app could not play it itself (on Windows it
+// plays .wav files directly).
+listen("play-sound", async (e) => {
+  try {
+    const bytes = await invoke("read_sound", { path: e.payload });
+    const url = URL.createObjectURL(new Blob([bytes]));
+    const audio = new Audio(url);
+    audio.onended = audio.onerror = () => URL.revokeObjectURL(url);
+    await audio.play();
+  } catch (err) {
+    console.warn("sound", err);
   }
-  if (e.key === "F5") $("#btn-update").click();
 });
 
 // The backend paints the feed summary at once and fetches the real article
@@ -3349,7 +4034,7 @@ listen("article-ready", async (e) => {
       });
     }
     $(".pendingchip")?.remove();
-    if (document.documentElement.dataset.layout === "newspaper") renderList();
+    if (document.documentElement.dataset.layout === "newspaper") redrawRows([id]);
   } catch { /* the summary stays */ }
 });
 
@@ -3412,9 +4097,16 @@ listen("update-progress", (e) => {
   else setUpdating(p.done < p.total, p);
 });
 
+listen("icons-updated", async () => {
+  await loadIcons();
+  await loadTree();
+  refreshRowIcons();
+});
+
 listen("feeds-updated", async (e) => {
   await loadTree();
   await loadList();
+  await refreshStatus();
   if (e.payload) toast(`${e.payload} new`);
 });
 
@@ -3425,6 +4117,7 @@ async function refreshStatus() {
 
 (async function start() {
   applyTheme(localStorage.getItem("theme") || "system");
+  setTextScale(textScale(), { quiet: true });
   const d = localStorage.getItem("density") || "relaxed";
   document.documentElement.dataset.density = d;
   $("#seg-density").querySelectorAll("button").forEach((x) =>
@@ -3437,6 +4130,7 @@ async function refreshStatus() {
 
   seedToolbarClones();
   applyToolbars();
+  refreshKeyTips();
   wireGrips();
   wireTreeRootDrop();
 
@@ -3445,11 +4139,18 @@ async function refreshStatus() {
 
   $("#scopename").textContent = state.scopeName;
 
-  // Content first. The tree and the list do not depend on each other, so they
-  // load together; the list is drawn once more afterwards so its label chips
-  // can use the labels the tree brought back.
-  await Promise.all([loadTree(), loadList(), refreshStatus()]);
-  renderList();
+  // Content first. Icons are one quick read, needed by both panes. The tree
+  // and the list do not depend on each other, so they load together; the
+  // list is drawn once more afterwards so its label chips can use the labels
+  // the tree brought back.
+  try {
+    await loadIcons();
+    await Promise.all([loadTree(), loadList(), refreshStatus()]);
+    renderList();
+  } finally {
+    // The window was placed while hidden; it appears now, with its content.
+    invoke("window_ready").catch(() => {});
+  }
   setInterval(refreshStatus, 15000);
 
   // Then the plumbing that has no effect on the first paint. The backend

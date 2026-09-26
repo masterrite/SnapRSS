@@ -20,9 +20,26 @@ signs it when `TAURI_SIGNING_PRIVATE_KEY` is set).
 ## Releases and updates
 
 `.github/workflows/release.yml` builds, signs and publishes a GitHub release
-with a `latest.json` when a `v*` tag is pushed. To release: bump `version` in
-`tauri.conf.json` and the workspace `Cargo.toml`, commit, tag (`v1.0.1`) and
-push the tag. The repository needs one secret, `TAURI_SIGNING_PRIVATE_KEY`,
+with a `latest.json`. Nothing needs editing first. Either:
+
+- On the website: **Actions → Release → Run workflow**, type the version
+  (`1.0.1`) and press **Run workflow**. The build creates the `v1.0.1` tag
+  and the release on the latest commit of the chosen branch. A version that
+  already exists, or one not written like `1.0.1`, stops it straight away.
+- From a terminal: `git tag v1.0.1` and `git push origin v1.0.1`.
+
+The version is written into the workspace `Cargo.toml` and
+`tauri.conf.json` during the build, so the version committed in the
+repository only affects local builds.
+
+Publishing a release by hand on the Releases page with a new tag also starts
+the build, which adds the installer and `latest.json` to that release and
+keeps your title and notes. Until the build finishes (about 15 minutes) the
+release has no `latest.json`, so update checks in that window say to try
+again later. Saving it as a draft does not create the tag, so nothing is
+built until it is published.
+
+The repository needs one secret, `TAURI_SIGNING_PRIVATE_KEY`,
 holding the private key that matches the public key in `tauri.conf.json`
 (`plugins.updater.pubkey`). The app only installs updates signed with it; a
 lost key means installed copies can no longer update themselves and need the

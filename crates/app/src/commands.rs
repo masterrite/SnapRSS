@@ -53,7 +53,7 @@ impl Serialize for CommandError {
     }
 }
 
-type Res<T> = Result<T, CommandError>;
+pub type Res<T> = Result<T, CommandError>;
 
 // ---------------------------------------------------------------- view models
 
@@ -149,15 +149,27 @@ fn build_tree(db: &Db, parent: Option<i64>) -> Result<Vec<TreeNode>, DbError> {
 
 /// `scope` is one of: `all`, `unread`, `starred`, `deleted`, `feed:<id>`,
 /// `folder:<id>`, `label:<id>`.
+///
+/// Pages through the whole scope: `offset` skips rows already shown, so
+/// every article can be reached, not only the newest page. `query` searches
+/// title, author and feed name across the whole scope in SQL; filtering
+/// the loaded page in the browser could only ever find what was on it.
+/// `sort` is `date`, `title`, `author` or `feed`, with `-` in front for
+/// descending (`-date`, newest first, is the default).
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn news_list(
     state: State<'_, AppState>,
     scope: String,
     limit: Option<i64>,
+    offset: Option<i64>,
     excerpts: Option<bool>,
+    query: Option<String>,
+    sort: Option<String>,
 ) -> Res<Vec<ListItem>> {
     let db = state.db.lock().await;
-    let limit = limit.unwrap_or(500).clamp(1, 5000);
+    let limit = limit.unwrap_or(500).clamp(1, 20_000);
+    let offset = offset.unwrap_or(0).max(0);
 
     // Only the newspaper layout shows excerpts. Building them means reading
     // each article's body, which for feeds that carry full content can be
@@ -170,6 +182,31 @@ pub async fn news_list(
     };
 
     let (where_sql, param) = scope_filter(&scope)?;
+    let mut params: Vec<rusqlite::types::Value> = param.into_iter().map(Into::into).collect();
+
+    let mut search_sql = String::new();
+    if let Some(q) = query.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+        // Every word must appear somewhere in the title, author or feed name,
+        // in any letter case and any script.
+        for word in q.split_whitespace().take(8) {
+            let word = word.to_lowercase();
+            let escaped = word.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+            params.push(format!("%{escaped}%").into());
+            let n = params.len();
+            // SQLite's LIKE already ignores case for A to Z, and does it far
+            // faster; the lower-casing that covers every script is only
+            // needed for words with other letters in them.
+            let fold = |col: &str| if word.is_ascii() { col.to_string() } else { format!("snap_lower({col})") };
+            search_sql.push_str(&format!(
+                " AND ({} LIKE ?{n} ESCAPE '\\' OR {} LIKE ?{n} ESCAPE '\\' OR {} LIKE ?{n} ESCAPE '\\')",
+                fold("news.title"),
+                fold("news.author_name"),
+                fold("COALESCE(feeds.text, feeds.title, '')"),
+            ));
+        }
+    }
+
+    let order_sql = list_order(sort.as_deref());
 
     let sql = format!(
         "SELECT news.id, news.feed_id, COALESCE(feeds.text, feeds.title, ''),
@@ -178,9 +215,9 @@ pub async fn news_list(
                 news.read, news.starred,
                 {body_col}
          FROM news JOIN feeds ON feeds.id = news.feed_id
-         WHERE {where_sql}
-         ORDER BY COALESCE(news.published, news.received) DESC
-         LIMIT {limit}"
+         WHERE {where_sql}{search_sql}
+         ORDER BY {order_sql}
+         LIMIT {limit} OFFSET {offset}"
     );
 
     let mut stmt = db.conn().prepare(&sql).map_err(DbError::from)?;
@@ -203,18 +240,11 @@ pub async fn news_list(
             labels: Vec::new(),
         })
     };
-    let mut rows: Vec<ListItem> = match param {
-        Some(p) => stmt
-            .query_map([p], map)
-            .map_err(DbError::from)?
-            .collect::<Result<_, _>>()
-            .map_err(DbError::from)?,
-        None => stmt
-            .query_map([], map)
-            .map_err(DbError::from)?
-            .collect::<Result<_, _>>()
-            .map_err(DbError::from)?,
-    };
+    let mut rows: Vec<ListItem> = stmt
+        .query_map(rusqlite::params_from_iter(params), map)
+        .map_err(DbError::from)?
+        .collect::<Result<_, _>>()
+        .map_err(DbError::from)?;
 
     // Labels in one query rather than one per row. The list is capped at a few
     // thousand rows, so loading the whole join for the visible feed and
@@ -240,6 +270,28 @@ pub async fn news_list(
     }
 
     Ok(rows)
+}
+
+/// ORDER BY for the list. Every order ends on the id so pages do not
+/// overlap or skip rows that tie.
+fn list_order(sort: Option<&str>) -> String {
+    let sort = sort.unwrap_or("-date");
+    let (desc, key) = match sort.strip_prefix('-') {
+        Some(k) => (true, k),
+        None => (false, sort),
+    };
+    let dir = if desc { "DESC" } else { "ASC" };
+    let date = "COALESCE(news.published, news.received)";
+    match key {
+        "title" => format!("COALESCE(news.title, '') COLLATE NOCASE {dir}, {date} DESC, news.id DESC"),
+        "author" => format!(
+            "COALESCE(news.author_name, '') = '' ASC, COALESCE(news.author_name, '') COLLATE NOCASE {dir}, {date} DESC, news.id DESC"
+        ),
+        "feed" => format!(
+            "COALESCE(feeds.text, feeds.title, '') COLLATE NOCASE {dir}, {date} DESC, news.id DESC"
+        ),
+        _ => format!("{date} {dir}, news.id {dir}"),
+    }
 }
 
 /// First couple of sentences of a feed body, as plain text.
@@ -495,6 +547,7 @@ fn spawn_extraction(
 
         // Readability is CPU-bound and can take tens of milliseconds on a big
         // page. Off the async runtime so it cannot stall other commands.
+        let link_for_store = link.clone();
         let extracted =
             tokio::task::spawn_blocking(move || snaprss_article::extract(&body, &link).ok())
                 .await
@@ -506,9 +559,12 @@ fn spawn_extraction(
         let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         {
             let db = db.lock().await;
+            // Matched on the link too: if the article's feed was removed
+            // while the page was being fetched, SQLite can hand its id to a
+            // new article, which would have been given this page's text.
             let _ = db.conn().execute(
-                "UPDATE news SET article_html = ?1, article_fetched = ?2 WHERE id = ?3",
-                rusqlite::params![a.html, now, id],
+                "UPDATE news SET article_html = ?1, article_fetched = ?2 WHERE id = ?3 AND link_href = ?4",
+                rusqlite::params![a.html, now, id, link_for_store],
             );
         }
         done(true);
@@ -563,7 +619,14 @@ fn read_minutes_of(html: &str) -> u32 {
 }
 
 #[tauri::command]
-pub async fn counts(state: State<'_, AppState>) -> Res<Counts> {
+pub async fn counts(app: tauri::AppHandle, state: State<'_, AppState>) -> Res<Counts> {
+    // The page asks for counts after every change it makes, which is also
+    // when the tray's number goes stale.
+    crate::tray_badge::refresh(&app).await;
+    read_counts(&state).await
+}
+
+pub async fn read_counts(state: &AppState) -> Res<Counts> {
     let db = state.db.lock().await;
     let (unread, total, starred) = db
         .conn()
@@ -634,7 +697,10 @@ pub async fn set_deleted(state: State<'_, AppState>, ids: Vec<i64>, deleted: boo
         let tx = db.conn_mut().transaction().map_err(DbError::from)?;
         for id in &ids {
             tx.execute(
-                "UPDATE news SET deleted = ?1, delete_date = ?2 WHERE id = ?3",
+                // deleted = 2 is what emptying Deleted leaves behind: a stub
+                // kept only so the article is not downloaded again. Undoing a
+                // delete after that brought the stubs back as blank articles.
+                "UPDATE news SET deleted = ?1, delete_date = ?2 WHERE id = ?3 AND deleted <> 2",
                 rusqlite::params![deleted as i64, if deleted { Some(&now) } else { None }, id],
             )
             .map_err(DbError::from)?;
@@ -681,6 +747,45 @@ pub async fn mark_scope_read(state: State<'_, AppState>, scope: String) -> Res<V
 }
 
 // ------------------------------------------------------------------- feed crud
+
+#[derive(Debug, Serialize)]
+pub struct FoundFeed {
+    pub url: String,
+    pub title: Option<String>,
+    /// Already in the subscription list.
+    pub subscribed: bool,
+}
+
+/// What Add feed looks at before adding: the address itself if it is a
+/// feed, or the feeds the page links to. No lock is held while fetching.
+#[tauri::command]
+pub async fn discover_feed(state: State<'_, AppState>, address: String) -> Res<Vec<FoundFeed>> {
+    let url = snaprss_fetch::discover::normalise(&address);
+    let parsed = url::Url::parse(&url).map_err(|e| CommandError::Invalid(format!("not a web address: {e}")))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(CommandError::Invalid("only http and https feeds are supported".into()));
+    }
+    let found = snaprss_fetch::discover::discover(&state.http, &state.fetch_cfg, &url)
+        .await
+        .map_err(|e| CommandError::Invalid(format!("could not open {url}: {e}")))?;
+    let db = state.db.lock().await;
+    let have: Vec<url::Url> = db
+        .conn()
+        .prepare("SELECT xml_url FROM feeds WHERE kind = 1 AND xml_url IS NOT NULL")
+        .map_err(DbError::from)?
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(DbError::from)?
+        .filter_map(Result::ok)
+        .filter_map(|u| url::Url::parse(u.trim()).ok())
+        .collect();
+    Ok(found
+        .into_iter()
+        .map(|f| {
+            let subscribed = url::Url::parse(&f.url).is_ok_and(|u| have.contains(&u));
+            FoundFeed { url: f.url, title: f.title, subscribed }
+        })
+        .collect())
+}
 
 #[tauri::command]
 pub async fn add_feed(state: State<'_, AppState>, url: String, parent_id: Option<i64>) -> Res<i64> {
@@ -940,6 +1045,8 @@ pub async fn update_all(app: tauri::AppHandle, state: State<'_, AppState>) -> Re
 
     let mut db = state.db.lock().await;
     let summary = snaprss_fetch::apply_fetched(&mut db, fetched)?;
+    drop(db);
+    crate::alerts::announce(&app, &summary);
     Ok(summary.into())
 }
 
@@ -955,7 +1062,7 @@ fn emit_progress(app: &tauri::AppHandle, done: usize, total: usize, title: &str,
 /// updates every feed inside it, at any depth; passing a folder used to fail,
 /// because a folder has no URL to fetch.
 #[tauri::command]
-pub async fn update_feed_now(state: State<'_, AppState>, id: i64) -> Res<UpdateResult> {
+pub async fn update_feed_now(app: tauri::AppHandle, state: State<'_, AppState>, id: i64) -> Res<UpdateResult> {
     let feeds: Vec<snaprss_fetch::DueFeed> = {
         let db = state.db.lock().await;
         let mut stmt = db
@@ -981,10 +1088,13 @@ pub async fn update_feed_now(state: State<'_, AppState>, id: i64) -> Res<UpdateR
                     xml_url: r.get(2)?,
                     etag: r.get(3)?,
                     last_modified: r.get(4)?,
+                    credentials: None,
                 })
             })
             .map_err(DbError::from)?;
-        rows.collect::<Result<_, _>>().map_err(DbError::from)?
+        let mut feeds: Vec<_> = rows.collect::<Result<_, _>>().map_err(DbError::from)?;
+        snaprss_fetch::schedule::attach_credentials(&db, &mut feeds)?;
+        feeds
     };
     if feeds.is_empty() {
         return Ok(UpdateResult::default());
@@ -995,7 +1105,10 @@ pub async fn update_feed_now(state: State<'_, AppState>, id: i64) -> Res<UpdateR
         snaprss_fetch::fetch_all(&state.http, &state.fetch_cfg, feeds, 6, |_| {}).await;
 
     let mut db = state.db.lock().await;
-    Ok(snaprss_fetch::apply_fetched(&mut db, fetched)?.into())
+    let summary = snaprss_fetch::apply_fetched(&mut db, fetched)?;
+    drop(db);
+    crate::alerts::announce(&app, &summary);
+    Ok(summary.into())
 }
 
 // ------------------------------------------------------- importing / exporting
@@ -1182,6 +1295,15 @@ pub struct FeedSettings {
     pub never_delete_unread: bool,
     pub never_delete_starred: bool,
     pub never_delete_labeled: bool,
+    // sign-in: the user name, and whether a password is saved. The saved
+    // password itself never goes to the page.
+    #[serde(default)]
+    pub sign_in_user: Option<String>,
+    #[serde(default)]
+    pub has_password: bool,
+    /// On save only: a new password, or None to keep the saved one.
+    #[serde(default, skip_serializing)]
+    pub sign_in_password: Option<String>,
     // read-only status
     pub status: Option<String>,
     pub updated: Option<String>,
@@ -1229,6 +1351,9 @@ pub async fn feed_settings(state: State<'_, AppState>, id: i64) -> Res<FeedSetti
                     never_delete_unread: r.get::<_, i64>(19)? != 0,
                     never_delete_starred: r.get::<_, i64>(20)? != 0,
                     never_delete_labeled: r.get::<_, i64>(21)? != 0,
+                    sign_in_user: None,
+                    has_password: false,
+                    sign_in_password: None,
                     status: r.get(22)?,
                     updated: r.get(23)?,
                     article_count: r.get(24)?,
@@ -1236,6 +1361,11 @@ pub async fn feed_settings(state: State<'_, AppState>, id: i64) -> Res<FeedSetti
             },
         )
         .map_err(DbError::from)?;
+    let mut s = s;
+    if let Some(c) = db.feed_credentials(id)? {
+        s.has_password = !c.password.is_empty();
+        s.sign_in_user = Some(c.user);
+    }
     Ok(s)
 }
 
@@ -1282,6 +1412,11 @@ pub async fn save_feed_settings(state: State<'_, AppState>, s: FeedSettings) -> 
             ],
         )
         .map_err(DbError::from)?;
+    // An empty user name signs the feed out; a blank password keeps the
+    // saved one.
+    if let Some(user) = s.sign_in_user.as_deref() {
+        db.save_feed_sign_in(s.id, user, s.sign_in_password.as_deref())?;
+    }
     Ok(())
 }
 
@@ -1637,7 +1772,7 @@ pub async fn filter_vocabulary() -> Res<serde_json::Value> {
         "fields": fields.iter().map(|f| f.as_str()).collect::<Vec<_>>(),
         "ops": ops,
         "statuses": ["new", "read", "starred"],
-        "actions": ["mark_read", "add_star", "delete", "add_label"],
+        "actions": ["mark_read", "add_star", "delete", "add_label", "play_sound", "notify"],
     }))
 }
 
@@ -1988,10 +2123,20 @@ pub async fn find_update(app: &tauri::AppHandle) -> Res<Option<UpdateInfo>> {
         .endpoints(vec![endpoint])
         .and_then(|b| b.build())
         .map_err(|e| CommandError::Invalid(format!("update check: {e}")))?;
-    let found = updater
-        .check()
-        .await
-        .map_err(|e| CommandError::Invalid(format!("update check: {e}")))?;
+    let found = updater.check().await.map_err(|e| {
+        let msg = e.to_string();
+        // A release without latest.json (still being built, or published by
+        // hand) answers 404, which the updater reports as an invalid JSON.
+        if msg.contains("valid release JSON") {
+            CommandError::Invalid(
+                "No update information was found. If a new version is being published, \
+                 try again in a few minutes."
+                    .into(),
+            )
+        } else {
+            CommandError::Invalid(format!("update check: {msg}"))
+        }
+    })?;
     let info = found.as_ref().map(|u| UpdateInfo {
         version: u.version.clone(),
         current: u.current_version.clone(),
@@ -2046,6 +2191,129 @@ pub async fn install_update(app: tauri::AppHandle, state: State<'_, AppState>) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn list_app() -> tauri::App<tauri::test::MockRuntime> {
+        use tauri::Manager;
+        let db = Db::open_in_memory().unwrap();
+        db.conn()
+            .execute_batch(
+                "INSERT INTO feeds(id, kind, text, xml_url) VALUES (1, 1, 'Alpha Feed', 'https://a.test/'),
+                                                                  (2, 1, 'Beta Feed', 'https://b.test/');",
+            )
+            .unwrap();
+        for n in 0..1200 {
+            db.conn()
+                .execute(
+                    "INSERT INTO news(feed_id, guid, title, author_name, published, received, read, deleted)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?5, 0, 0)",
+                    rusqlite::params![
+                        1 + n % 2,
+                        format!("g{n}"),
+                        format!("Post {n:04} 100%_done"),
+                        if n % 3 == 0 { Some("Zed") } else { None },
+                        format!("2026-01-01T{:02}:{:02}:00Z", n / 60 % 24, n % 60),
+                    ],
+                )
+                .unwrap();
+        }
+        let app = tauri::test::mock_app();
+        let cfg = snaprss_fetch::FetchConfig::default();
+        app.manage(AppState {
+            db: std::sync::Arc::new(tokio::sync::Mutex::new(db)),
+            http: snaprss_fetch::build_client(&cfg).unwrap(),
+            fetch_cfg: cfg,
+            close_to_tray: Default::default(),
+            quitting: Default::default(),
+            pending_update: Default::default(),
+        });
+        app
+    }
+
+    /// Every article in a scope is reachable page by page, and a search
+    /// finds articles on pages that were never loaded.
+    #[test]
+    fn the_whole_scope_is_reachable_and_searchable() {
+        use tauri::Manager;
+        let app = list_app();
+        let st = || app.state::<AppState>();
+        tauri::async_runtime::block_on(async {
+            let mut seen = std::collections::HashSet::new();
+            let mut offset = 0;
+            loop {
+                let page = news_list(st(), "all".into(), Some(500), Some(offset), None, None, None).await.unwrap();
+                for r in &page {
+                    assert!(seen.insert(r.id), "article {} came twice", r.id);
+                }
+                offset += page.len() as i64;
+                if page.len() < 500 {
+                    break;
+                }
+            }
+            assert_eq!(seen.len(), 1200);
+
+            let hit = news_list(st(), "all".into(), None, None, None, Some("post 0007".into()), None).await.unwrap();
+            assert_eq!(hit.iter().map(|r| r.title.as_str()).collect::<Vec<_>>(), ["Post 0007 100%_done"]);
+            // Every word must match; the feed name counts.
+            let hit = news_list(st(), "all".into(), None, None, None, Some("beta 0007".into()), None).await.unwrap();
+            assert_eq!(hit.len(), 1, "post 7 is in Beta Feed");
+            let hit = news_list(st(), "feed:1".into(), None, None, None, Some("0007".into()), None).await.unwrap();
+            assert!(hit.is_empty(), "the search stays inside the scope");
+            // % and _ are text, not wildcards.
+            let all = news_list(st(), "all".into(), Some(5000), None, None, Some("100%_".into()), None).await.unwrap();
+            assert_eq!(all.len(), 1200);
+            let none = news_list(st(), "all".into(), None, None, None, Some("100_%".into()), None).await.unwrap();
+            assert!(none.is_empty());
+            // Letter case is ignored in every script, not only A to Z.
+            {
+                let handle = st().db.clone();
+                let db = handle.lock().await;
+                db.conn().execute("UPDATE news SET title = 'Новости дня' WHERE guid = 'g5'", []).unwrap();
+                db.conn().execute("UPDATE news SET title = 'Élan VITAL' WHERE guid = 'g6'", []).unwrap();
+            }
+            let ru = news_list(st(), "all".into(), None, None, None, Some("новости".into()), None).await.unwrap();
+            assert_eq!(ru.len(), 1, "Cyrillic, typed in lower case");
+            let fr = news_list(st(), "all".into(), None, None, None, Some("élan vital".into()), None).await.unwrap();
+            assert_eq!(fr.len(), 1, "accented Latin");
+        });
+    }
+
+    #[test]
+    fn undoing_a_delete_after_emptying_deleted_does_not_bring_the_article_back() {
+        use tauri::Manager;
+        let app = list_app();
+        let st = || app.state::<AppState>();
+        tauri::async_runtime::block_on(async {
+            let first = news_list(st(), "all".into(), Some(1), None, None, None, None).await.unwrap();
+            let id = first[0].id;
+            set_deleted(st(), vec![id], true).await.unwrap();
+            purge_deleted(st(), None).await.unwrap();
+            set_deleted(st(), vec![id], false).await.unwrap();
+            let all = news_list(st(), "all".into(), Some(5000), None, None, None, None).await.unwrap();
+            assert!(all.iter().all(|r| r.id != id), "the emptied article came back as a blank row");
+        });
+    }
+
+    #[test]
+    fn the_list_sorts() {
+        use tauri::Manager;
+        let app = list_app();
+        let st = || app.state::<AppState>();
+        tauri::async_runtime::block_on(async {
+            let titles = |v: &[ListItem]| v.iter().map(|r| r.title.clone()).collect::<Vec<_>>();
+            let asc = news_list(st(), "all".into(), Some(3), None, None, None, Some("title".into())).await.unwrap();
+            assert_eq!(titles(&asc), ["Post 0000 100%_done", "Post 0001 100%_done", "Post 0002 100%_done"]);
+            let desc = news_list(st(), "all".into(), Some(1), None, None, None, Some("-title".into())).await.unwrap();
+            assert_eq!(desc[0].title, "Post 1199 100%_done");
+            let by_feed = news_list(st(), "all".into(), Some(5000), None, None, None, Some("-feed".into())).await.unwrap();
+            assert!(by_feed[..600].iter().all(|r| r.feed_title == "Beta Feed"));
+            // Articles with an author come before those without, either way.
+            let by_author = news_list(st(), "all".into(), Some(5000), None, None, None, Some("-author".into())).await.unwrap();
+            assert!(by_author[..400].iter().all(|r| r.author.as_deref() == Some("Zed")));
+            let newest = news_list(st(), "all".into(), Some(1), None, None, None, None).await.unwrap();
+            let oldest = news_list(st(), "all".into(), Some(1), None, None, None, Some("date".into())).await.unwrap();
+            assert!(newest[0].published > oldest[0].published);
+        });
+    }
 
     /// The label editor sends camelCase keys inside `draft`. Tauri renames
     /// top-level arguments only, so these have to match on their own.

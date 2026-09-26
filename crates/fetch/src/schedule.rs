@@ -7,6 +7,7 @@
 
 use chrono::{DateTime, Duration, Utc};
 
+use snaprss_core::passwords::{server_of, Credentials};
 use snaprss_core::{Db, DbError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,6 +18,26 @@ pub struct DueFeed {
     pub xml_url: String,
     pub etag: Option<String>,
     pub last_modified: Option<String>,
+    /// Sent as HTTP basic authentication, for feeds marked as needing it.
+    pub credentials: Option<Credentials>,
+}
+
+/// Fill in the sign-in for feeds whose `authentication` flag is set, from
+/// the stored passwords for their host.
+pub fn attach_credentials(db: &Db, feeds: &mut [DueFeed]) -> Result<(), DbError> {
+    let flagged: std::collections::HashSet<i64> = db
+        .conn()
+        .prepare("SELECT id FROM feeds WHERE authentication = 1")?
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    if flagged.is_empty() {
+        return Ok(());
+    }
+    let creds = db.all_credentials()?;
+    for f in feeds.iter_mut().filter(|f| flagged.contains(&f.id)) {
+        f.credentials = creds.get(&server_of(&f.xml_url)).cloned();
+    }
+    Ok(())
 }
 
 /// The longest interval honoured. Beyond this the arithmetic overflows and
@@ -77,9 +98,12 @@ pub fn all_feeds(db: &Db) -> Result<Vec<DueFeed>, DbError> {
             xml_url: r.get(2)?,
             etag: r.get(3)?,
             last_modified: r.get(4)?,
+            credentials: None,
         })
     })?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    let mut feeds = rows.collect::<Result<Vec<_>, _>>()?;
+    attach_credentials(db, &mut feeds)?;
+    Ok(feeds)
 }
 
 pub fn due_feeds(
@@ -138,8 +162,10 @@ pub fn due_feeds(
                 xml_url,
                 etag,
                 last_modified,
+                credentials: None,
             });
         }
     }
+    attach_credentials(db, &mut due)?;
     Ok(due)
 }

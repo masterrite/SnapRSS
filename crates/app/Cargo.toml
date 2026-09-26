@@ -20,6 +20,7 @@ tauri-plugin-clipboard-manager = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
+tauri-plugin-notification = "2"
 
 rusqlite = { version = "0.32", features = ["bundled", "backup"] }
 regex = "1"
@@ -34,10 +35,13 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [target.'cfg(windows)'.dependencies]
-# Only for WM_SETICON: Tauri sets the small window icon but never the big one,
-# and the taskbar reads the big one.
+# WM_SETICON (Tauri sets the small window icon but never the big one, and the
+# taskbar reads the big one) and PlaySound for filter sounds.
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Media",
+    "Win32_Media_Audio",
     "Win32_System_LibraryLoader",
     "Win32_UI_HiDpi",
     "Win32_UI_WindowsAndMessaging",

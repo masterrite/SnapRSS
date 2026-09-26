@@ -16,7 +16,7 @@ use reqwest::{Client, StatusCode};
 pub const DEFAULT_USER_AGENT: &str = concat!(
     "SnapRSS/",
     env!("CARGO_PKG_VERSION"),
-    " (+https://snaprss.example)"
+    " (+https://github.com/masterrite/SnapRSS)"
 );
 
 /// Feed formats first, then a weak fallback. Some servers content-negotiate.
@@ -27,7 +27,9 @@ const ACCEPT_FEEDS: &str = "application/atom+xml, application/rss+xml, applicati
 pub enum FetchError {
     #[error("network: {0}")]
     Network(String),
-    #[error("http {status}")]
+    #[error("http {status}{}", if *status == 401 {
+        ": this feed needs a user name and password (feed Properties → Sign-in)"
+    } else { "" })]
     Status { status: u16 },
     #[error("body too large: {0} bytes")]
     TooLarge(u64),
@@ -110,6 +112,24 @@ pub async fn fetch(
     known: &Validators,
     cfg: &FetchConfig,
 ) -> Result<FetchOutcome, FetchError> {
+    fetch_as(client, url, known, cfg, None).await
+}
+
+/// [`fetch`], signed in. reqwest drops the Authorization header if a
+/// redirect leaves the host, so a password is never sent to another server.
+///
+/// reqwest also drops it when only the port changes, which is what the usual
+/// http://host/feed to https://host/feed redirect does, and every poll of
+/// such a feed failed with 401. So a 401 from where a redirect landed is
+/// asked once more, signed in, when that is the same server the password
+/// was saved for and not a step down from https.
+pub async fn fetch_as(
+    client: &Client,
+    url: &str,
+    known: &Validators,
+    cfg: &FetchConfig,
+    credentials: Option<&snaprss_core::passwords::Credentials>,
+) -> Result<FetchOutcome, FetchError> {
     let parsed = url::Url::parse(url).map_err(|e| FetchError::BadUrl(e.to_string()))?;
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err(FetchError::BadUrl(format!(
@@ -118,22 +138,36 @@ pub async fn fetch(
         )));
     }
 
-    let mut req = client.get(parsed.clone());
-    if let Some(etag) = known.etag.as_deref() {
-        if let Ok(v) = HeaderValue::from_str(etag) {
-            req = req.header(IF_NONE_MATCH, v);
+    let send = |target: url::Url| {
+        let mut req = client.get(target);
+        if let Some(c) = credentials {
+            req = req.basic_auth(&c.user, Some(&c.password));
         }
-    }
-    if let Some(lm) = known.last_modified.as_deref() {
-        if let Ok(v) = HeaderValue::from_str(lm) {
-            req = req.header(IF_MODIFIED_SINCE, v);
+        if let Some(etag) = known.etag.as_deref() {
+            if let Ok(v) = HeaderValue::from_str(etag) {
+                req = req.header(IF_NONE_MATCH, v);
+            }
         }
-    }
+        if let Some(lm) = known.last_modified.as_deref() {
+            if let Ok(v) = HeaderValue::from_str(lm) {
+                req = req.header(IF_MODIFIED_SINCE, v);
+            }
+        }
+        req.send()
+    };
 
-    let resp = req
-        .send()
+    let mut resp = send(parsed.clone())
         .await
         .map_err(|e| FetchError::Network(e.to_string()))?;
+    if resp.status() == StatusCode::UNAUTHORIZED
+        && credentials.is_some()
+        && may_resend_credentials(&parsed, resp.url())
+    {
+        let landed = resp.url().clone();
+        resp = send(landed)
+            .await
+            .map_err(|e| FetchError::Network(e.to_string()))?;
+    }
 
     let status = resp.status();
     let validators = Validators {
@@ -166,7 +200,6 @@ pub async fn fetch(
     // Counted as it arrives. Content-Length is absent on chunked responses and
     // on anything reqwest decompresses, so checking it alone let a small
     // gzip that unpacks to gigabytes fill memory before the size check ran.
-    let mut resp = resp;
     let mut bytes = Vec::new();
     while let Some(chunk) = resp
         .chunk()
@@ -187,10 +220,40 @@ pub async fn fetch(
     })
 }
 
+/// Whether a password sent to `asked` may be sent again to `landed`, where
+/// a redirect from it ended: a different address on the same server, by the
+/// same rule that picks the saved password for a feed, and not from https to
+/// plain http, where anyone on the way could read it.
+fn may_resend_credentials(asked: &url::Url, landed: &url::Url) -> bool {
+    use snaprss_core::passwords::server_of;
+    landed != asked
+        && server_of(landed.as_str()) == server_of(asked.as_str())
+        && !(asked.scheme() == "https" && landed.scheme() != "https")
+}
+
 fn header_string(headers: &HeaderMap, name: reqwest::header::HeaderName) -> Option<String> {
     headers
         .get(name)
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string())
         .filter(|s| !s.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::may_resend_credentials;
+
+    fn ok(from: &str, to: &str) -> bool {
+        may_resend_credentials(&url::Url::parse(from).unwrap(), &url::Url::parse(to).unwrap())
+    }
+
+    #[test]
+    fn a_password_follows_a_redirect_only_on_its_own_server_and_never_down_to_http() {
+        assert!(ok("http://h.test/feed", "https://h.test/feed"));
+        assert!(ok("https://h.test/feed", "https://h.test:8443/rss"));
+        assert!(!ok("https://h.test/feed", "http://h.test/feed"), "downgrade");
+        assert!(!ok("http://h.test/feed", "https://cdn.h.test/feed"), "another host");
+        assert!(!ok("http://h.test/feed", "https://evil.test/feed"), "another host");
+        assert!(!ok("http://h.test/feed", "http://h.test/feed"), "no redirect, already sent");
+    }
 }

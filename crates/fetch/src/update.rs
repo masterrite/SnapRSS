@@ -6,7 +6,7 @@ use reqwest::Client;
 
 use snaprss_core::{Db, DbError};
 
-use crate::http::{fetch, FetchConfig, FetchError, FetchOutcome, Validators};
+use crate::http::{fetch_as, FetchConfig, FetchError, FetchOutcome, Validators};
 use crate::ingest::{ingest, IngestReport, IngestRules};
 use crate::schedule::{due_feeds, DueFeed};
 
@@ -28,6 +28,11 @@ pub struct UpdateSummary {
     pub ingested: usize,
     pub failed: usize,
     pub new_articles: usize,
+    /// Sound files filters asked to play, each once.
+    pub sounds: Vec<String>,
+    /// (feed title, article title) for new articles a filter asked to be
+    /// notified about.
+    pub notices: Vec<(String, String)>,
 }
 
 fn record_success(db: &Db, feed_id: i64, v: &Validators) -> Result<(), DbError> {
@@ -76,7 +81,7 @@ pub async fn update_feed(
         etag: feed.etag.clone(),
         last_modified: feed.last_modified.clone(),
     };
-    let result = fetch(client, &feed.xml_url, &known, cfg).await;
+    let result = fetch_as(client, &feed.xml_url, &known, cfg, feed.credentials.as_ref()).await;
     apply_one(db, feed, result)
 }
 
@@ -127,7 +132,7 @@ where
                 etag: f.etag.clone(),
                 last_modified: f.last_modified.clone(),
             };
-            let result = fetch(client, &f.xml_url, &known, cfg).await;
+            let result = fetch_as(client, &f.xml_url, &known, cfg, f.credentials.as_ref()).await;
             let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             on_progress(Progress {
                 done: n,
@@ -153,10 +158,17 @@ pub fn apply_fetched(db: &mut Db, fetched: Vec<Fetched>) -> Result<UpdateSummary
     let mut summary = UpdateSummary::default();
 
     for Fetched { feed, result } in fetched {
-        // Removed while its fetch was in flight: nothing to write.
+        // Removed while its fetch was in flight: nothing to write. The id
+        // alone does not say so, because SQLite gives a removed feed's id to
+        // the next one added, which then took the old feed's articles, title
+        // and ETag. Its address has to still be the one fetched.
         let exists = db
             .conn()
-            .query_row("SELECT 1 FROM feeds WHERE id = ?1", [feed.id], |_| Ok(()))
+            .query_row(
+                "SELECT 1 FROM feeds WHERE id = ?1 AND xml_url = ?2",
+                rusqlite::params![feed.id, feed.xml_url],
+                |_| Ok(()),
+            )
             .is_ok();
         if !exists {
             continue;
@@ -167,6 +179,12 @@ pub fn apply_fetched(db: &mut Db, fetched: Vec<Fetched>) -> Result<UpdateSummary
             Ok(UpdateOutcome::Ingested(report)) => {
                 summary.ingested += 1;
                 summary.new_articles += report.inserted;
+                for s in report.sounds {
+                    if !summary.sounds.contains(&s) {
+                        summary.sounds.push(s);
+                    }
+                }
+                summary.notices.extend(report.notify.into_iter().map(|t| (feed.title.clone(), t)));
             }
             Ok(UpdateOutcome::Failed { .. }) => summary.failed += 1,
             Err(e) => {
@@ -236,7 +254,7 @@ fn adopt_title(db: &Db, feed: &DueFeed, parsed: &feed_rs::model::Feed) -> Result
         .map(|t| t.content.trim().to_string())
         .filter(|t| !t.is_empty())
     else {
-        return Ok(());
+        return adopt_site(db, feed, parsed);
     };
     let host = url::Url::parse(&feed.xml_url)
         .ok()
@@ -248,6 +266,24 @@ fn adopt_title(db: &Db, feed: &DueFeed, parsed: &feed_rs::model::Feed) -> Result
          WHERE id = ?3",
         rusqlite::params![title, host, feed.id],
     )?;
+    adopt_site(db, feed, parsed)
+}
+
+/// The site the feed belongs to, from its own link, when none is stored.
+/// Its icon is looked up there.
+fn adopt_site(db: &Db, feed: &DueFeed, parsed: &feed_rs::model::Feed) -> Result<(), DbError> {
+    let site = parsed
+        .links
+        .iter()
+        .filter(|l| matches!(l.rel.as_deref(), None | Some("alternate")))
+        .map(|l| l.href.trim())
+        .find(|h| (h.starts_with("http://") || h.starts_with("https://")) && *h != feed.xml_url);
+    if let Some(site) = site {
+        db.conn().execute(
+            "UPDATE feeds SET html_url = ?1 WHERE id = ?2 AND (html_url IS NULL OR html_url = '')",
+            rusqlite::params![site, feed.id],
+        )?;
+    }
     Ok(())
 }
 
