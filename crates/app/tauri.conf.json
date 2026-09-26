@@ -42,7 +42,7 @@
     "copyright": "Licensed Apache-2.0",
     "windows": {
       "nsis": {
-        "installMode": "currentUser",
+        "installMode": "perMachine",
         "installerHooks": "./windows/installer-hooks.nsh"
       },
       "webviewInstallMode": {

@@ -718,12 +718,12 @@ async function loadList() {
   const limit = key === state.listKey ? Math.min(MAX_ROWS, Math.max(PAGE, state.items.length)) : PAGE;
   const items = await fetchList(scope, 0, limit);
   if (ticket !== loadListTicket || scope !== listScope()) return;
-  const same = key === state.listKey && items.length === state.items.length
-    && items.every((it, k) => it.id === state.items[k].id) && !!$("#list .item")
+  // The same list again (after an update, a delete, marking read) keeps the
+  // rows already on screen and changes only what differs. Drawing every row
+  // again froze the window for a second or more with thousands loaded.
+  const reuse = key === state.listKey && items.length > 0 && !!$("#list .item")
     && drawnLayout === document.documentElement.dataset.layout;
-  const changed = same
-    ? items.filter((it, k) => JSON.stringify(it) !== JSON.stringify(state.items[k])).map((i) => i.id)
-    : null;
+  const before = reuse ? new Map(state.items.map((i) => [i.id, JSON.stringify(i)])) : null;
   state.items = items;
   state.more = items.length === limit;
   state.listKey = key;
@@ -733,18 +733,80 @@ async function loadList() {
   const live = new Set(state.items.map((i) => i.id));
   state.sel = new Set([...state.sel].filter((id) => live.has(id)));
   if (state.anchor !== null && !live.has(state.anchor)) state.anchor = null;
-  // A reload after a background update usually brings back the same
-  // articles in the same order. Redrawing every row then froze the window
-  // for a second with thousands loaded, every time an update ran.
-  if (same) {
-    redrawRows(changed);
-    renderSelection();
-    // Articles can arrive below the loaded ones (sorted oldest first, or an
-    // old date), so whether there are more is asked again each time.
-    const marker = $("#list .more");
-    if (state.more && !marker) $("#list").insertAdjacentHTML("beforeend", `<div class="more">Loading more…</div>`);
-    if (!state.more && marker) marker.remove();
-  } else renderList();
+  if (reuse) reconcileList(before);
+  else renderList();
+}
+
+/// Bring the rows on screen in line with state.items, given what each row
+/// showed before (`before`: id → the article as it was drawn). Rows that are
+/// unchanged and still in the list stay where they are; only new, changed or
+/// removed ones, and the headings around them, touch the page.
+function reconcileList(before) {
+  const el = $("#list");
+  const paper = document.documentElement.dataset.layout === "newspaper";
+  const groupOf = listGrouper();
+  rowNode(-1); // make sure the id → row index is built
+  const heads = new Map([...el.querySelectorAll(":scope > .group")].map((g) => [g.textContent, g]));
+
+  // What the list should hold, in order, reusing every row and heading that
+  // can be reused.
+  const want = [];
+  const keep = new Set();
+  const fresh = [];
+  let group = null;
+  for (const i of state.items) {
+    if (groupOf) {
+      const g = groupOf(i);
+      if (g !== group) {
+        group = g;
+        const label = g.toUpperCase();
+        let h = heads.get(label);
+        if (!h) {
+          h = document.createElement("div");
+          h.className = "group";
+          h.textContent = label;
+        }
+        heads.delete(label);
+        want.push(h);
+        keep.add(h);
+      }
+    }
+    let n = rowNodes.get(i.id);
+    if (!n || before.get(i.id) !== JSON.stringify(i)) {
+      const t = document.createElement("template");
+      t.innerHTML = rowHtml(i, paper);
+      n = t.content.firstElementChild;
+      fresh.push(n);
+    }
+    want.push(n);
+    keep.add(n);
+  }
+  let marker = el.querySelector(":scope > .more");
+  if (state.more) {
+    if (!marker) {
+      marker = document.createElement("div");
+      marker.className = "more";
+      marker.textContent = "Loading more…";
+    }
+    want.push(marker);
+    keep.add(marker);
+  }
+
+  // Take out what is gone first, so that what stays does not have to move.
+  for (const c of [...el.children]) if (!keep.has(c)) c.remove();
+  let at = el.firstElementChild;
+  for (const n of want) {
+    if (n === at) at = at.nextElementSibling;
+    else el.insertBefore(n, at);
+  }
+
+  for (const n of fresh) paint(n);
+  rowNodes = new Map();
+  for (const n of want) if (n.classList.contains("item")) rowNodes.set(Number(n.dataset.id), n);
+  // An open card that was kept still holds its article; filling it again
+  // would reload every picture in it.
+  if (paper && state.current && fresh.includes(rowNodes.get(state.current.id))) fillOpenCard(el);
+  renderSelection();
 }
 
 /// The next page, when the list is scrolled near its end. The request

@@ -81,8 +81,11 @@ async function invoke(cmd, args) {
       // Like the backend: every search word must appear in the title,
       // author or feed name; sorted; then the requested page.
       let rows = args.scope === "label:77" || (args.scope === "unread" && bigUnread.value)
-        ? Array.from({ length: bigRows.value }, (_, n) => ({ ...structuredClone(ITEMS[0]), id: 5000 + n,
-            title: `Old post ${n}`, published: new Date(BIG_T0 - n * 3600e3).toISOString(), labels: [] }))
+        ? [...Array.from({ length: bigNew.value }, (_, n) => ({ ...structuredClone(ITEMS[0]), id: 90000 + n,
+              title: `New post ${n}`, published: new Date(BIG_T0 + (n + 1) * 60e3).toISOString(), labels: [] })).reverse(),
+           ...Array.from({ length: bigRows.value }, (_, n) => ({ ...structuredClone(ITEMS[0]), id: 5000 + n,
+            title: `Old post ${n}`, published: new Date(BIG_T0 - n * 3600e3).toISOString(), labels: [] }))]
+            .filter((r) => !bigGone.has(r.id))
         : structuredClone(ITEMS).map((i) => ({ ...i, title: delay.news_list[args.scope] ? `${args.scope} ${i.title}` : i.title }));
       const words = (args.query || "").toLowerCase().split(/\s+/).filter(Boolean);
       rows = rows.filter((i) => words.every((w) =>
@@ -396,6 +399,8 @@ const bigUnread = { value: false };
 const bigRows = { value: 1234 };
 // Fixed, so the same article comes back the same from one request to the next.
 const BIG_T0 = Date.now();
+const bigNew = { value: 0 };
+const bigGone = new Set();
 const countsNow = { value: { unread: 3, total: 9, starred: 1 } };
 const icons = { value: { 2: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==" } };
 const closed = [];
@@ -2659,6 +2664,46 @@ console.log("\nlist drawing");
   ok(row(9990) === deep && row(9990).querySelector(".m .favicon") === icon,
      "new icons for other feeds leave these rows as they were");
   icons.value = { 2: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==" };
+  bigRows.value = 1234;
+
+  // A reload after a delete or an update keeps the rows on screen and only
+  // adds, removes or redraws what changed, and ends up exactly as a full
+  // draw would.
+  const layoutOf = () => [...$("#list").children].map((c) =>
+    c.classList.contains("item") ? c.dataset.id : c.classList.contains("group") ? "#" + c.textContent : "." + c.className);
+  const matchesFullDraw = () => {
+    const kept = layoutOf();
+    st("renderList()");
+    return JSON.stringify(kept) === JSON.stringify(layoutOf());
+  };
+  bigRows.value = 3000;
+  await window.eval('selectScope("label:77", "Many")');
+  while (st("state.more")) await st("loadMore()");
+  const keepTop = row(5000), keepDeep = row(7500);
+  bigGone.add(5001); bigGone.add(7000);
+  await fire("feeds-updated", 0);
+  await tick(60);
+  ok(!row(5001) && !row(7000) && row(5000) === keepTop && row(7500) === keepDeep,
+     "a reload after deleting removes those rows and keeps the rest as they were");
+  ok(matchesFullDraw(), "and the list is what a full draw gives");
+  const keepTop2 = row(5000), keepDeep2 = row(7500);
+  bigNew.value = 3;
+  await fire("feeds-updated", 3);
+  await tick(60);
+  ok(st("state.items[0].id") === 90002 && row(90002) && row(5000) === keepTop2 && row(7500) === keepDeep2,
+     "new articles arriving at the top are added above the rows already there");
+  ok(matchesFullDraw(), "with headings as a full draw would put them");
+  // A whole day's rows gone takes its heading with it.
+  const today = [...doc.querySelectorAll("#list .group")].map((g) => g.textContent);
+  st("state.items.filter((i) => dayKey(i.published) === dayKey(state.items[0].published)).map((i) => i.id)")
+    .forEach((id) => bigGone.add(id));
+  bigNew.value = 0;
+  await fire("feeds-updated", 0);
+  await tick(60);
+  const after = [...doc.querySelectorAll("#list .group")].map((g) => g.textContent);
+  ok(after.length === today.length - 1 && !after.includes(today[0]) && matchesFullDraw(),
+     `a heading left with no rows goes (${today} → ${after})`);
+  bigGone.clear();
   bigRows.value = 1234;
 
   // Newspaper: the open card follows J, and the one left behind closes.

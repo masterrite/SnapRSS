@@ -2025,7 +2025,56 @@ pub async fn set_autostart(app: tauri::AppHandle, on: bool) -> Res<bool> {
     let mgr = app.autolaunch();
     let r = if on { mgr.enable() } else { mgr.disable() };
     r.map_err(|e| CommandError::Invalid(format!("could not change the startup entry: {e}")))?;
+    if on {
+        quote_startup_entry(&app)
+            .map_err(|e| CommandError::Invalid(format!("could not change the startup entry: {e}")))?;
+    }
     Ok(mgr.is_enabled().unwrap_or(on))
+}
+
+/// The command Windows runs at login: the program's path in quotes.
+///
+/// The autostart plugin writes the path bare. SnapRSS installs under the
+/// user's own folder, so for anyone whose Windows user name has a space in
+/// it (C:\Users\Jane Doe\...) Windows split the path at the space, found
+/// no program at "C:\Users\Jane" and started nothing, without a word.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn startup_command(exe: &str) -> String {
+    format!("\"{exe}\"")
+}
+
+/// Rewrite the plugin's login entry, under the same name, with the path
+/// quoted. Called after every `enable`, which writes it bare again.
+#[cfg(windows)]
+pub fn quote_startup_entry(app: &tauri::AppHandle) -> std::io::Result<()> {
+    use windows_sys::Win32::System::Registry::{RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ};
+    let exe = std::env::current_exe()?;
+    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    let key = wide(r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run");
+    let name = wide(&app.package_info().name);
+    let data = wide(&startup_command(&exe.display().to_string()));
+    // SAFETY: every pointer is to a NUL-terminated UTF-16 buffer that lives
+    // until the call returns; the size is the data's length in bytes,
+    // terminator included, as REG_SZ requires.
+    let rc = unsafe {
+        RegSetKeyValueW(
+            HKEY_CURRENT_USER,
+            key.as_ptr(),
+            name.as_ptr(),
+            REG_SZ,
+            data.as_ptr().cast(),
+            (data.len() * 2) as u32,
+        )
+    };
+    if rc != 0 {
+        return Err(std::io::Error::from_raw_os_error(rc as i32));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn quote_startup_entry(_app: &tauri::AppHandle) -> std::io::Result<()> {
+    Ok(())
 }
 
 #[tauri::command]
@@ -2275,6 +2324,14 @@ mod tests {
             let fr = news_list(st(), "all".into(), None, None, None, Some("élan vital".into()), None).await.unwrap();
             assert_eq!(fr.len(), 1, "accented Latin");
         });
+    }
+
+    #[test]
+    fn the_login_entry_quotes_a_path_with_spaces() {
+        assert_eq!(
+            startup_command(r"C:\Users\Jane Doe\AppData\Local\SnapRSS\snaprss-app.exe"),
+            r#""C:\Users\Jane Doe\AppData\Local\SnapRSS\snaprss-app.exe""#
+        );
     }
 
     #[test]

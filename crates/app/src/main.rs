@@ -114,13 +114,18 @@ fn main() {
             close_to_tray.store(to_tray, std::sync::atomic::Ordering::Relaxed);
 
             // Earlier builds wrote the startup entry with `--minimized`, which
-            // started the window minimised regardless of the setting.
-            // Rewriting it drops the argument.
+            // started the window minimised regardless of the setting, and
+            // every build so far wrote the program's path without quotes,
+            // which Windows cannot run when the user folder has a space in
+            // its name. Rewriting the entry fixes both, and follows the
+            // program if it has moved.
             {
                 use tauri_plugin_autostart::ManagerExt;
                 let mgr = app.autolaunch();
-                if mgr.is_enabled().unwrap_or(false) {
-                    let _ = mgr.enable();
+                if mgr.is_enabled().unwrap_or(false) && mgr.enable().is_ok() {
+                    if let Err(e) = commands::quote_startup_entry(app.handle()) {
+                        tracing::warn!("could not rewrite the startup entry: {e}");
+                    }
                 }
             }
 

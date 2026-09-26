@@ -36,13 +36,15 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [target.'cfg(windows)'.dependencies]
 # WM_SETICON (Tauri sets the small window icon but never the big one, and the
-# taskbar reads the big one) and PlaySound for filter sounds.
+# taskbar reads the big one), PlaySound for filter sounds, and the registry
+# for the start-at-login entry.
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_Media",
     "Win32_Media_Audio",
     "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
     "Win32_UI_HiDpi",
     "Win32_UI_WindowsAndMessaging",
 ] }
