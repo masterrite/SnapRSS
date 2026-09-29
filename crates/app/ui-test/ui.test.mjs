@@ -195,6 +195,7 @@ async function invoke(cmd, args) {
     case "set_expanded": TREE.find((n) => n.id === args.id).expanded = args.expanded; return null;
     case "autostart_enabled": return autostart.value;
     case "set_autostart": autostart.value = args.on; return args.on;
+    case "set_ui_zoom": return Math.min(2, Math.max(0.7, args.scale));
     case "set_close_to_tray": return null;
     case "quit_app": return null;
     default: throw new Error(`unknown command ${cmd}`);
@@ -2722,6 +2723,41 @@ console.log("\nlist drawing");
   window.eval('setLayout("classic")');
   await tick(60);
   window.eval('applyTrayBehaviour({ "reading.mark_read_on_open": "1" })');
+}
+
+console.log("\ninterface size");
+{
+  closeSheetIfOpen();
+  const press = (k, o = {}) => doc.body.dispatchEvent(new window.KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true, ...o }));
+  const zooms = (from) => calls.slice(from).filter(([c]) => c === "set_ui_zoom").map(([, a]) => a.scale);
+  let n = calls.length;
+  press("=", { ctrlKey: true, altKey: true });
+  await tick(20);
+  press("=", { ctrlKey: true, altKey: true });
+  await tick(20);
+  press("-", { ctrlKey: true, altKey: true });
+  await tick(20);
+  ok(JSON.stringify(zooms(n)) === JSON.stringify([1.1, 1.25, 1.1]), `Ctrl+Alt+= and Ctrl+Alt+- step the interface size (${zooms(n)})`);
+  ok(window.__appEval("textScale()") === 1, "without touching the article text size");
+
+  window.eval("openSettings()");
+  await tick(80);
+  doc.querySelector('.sheet [data-page="appearance"], .sheet [data-k="appearance"]')?.click();
+  await tick(40);
+  const out = doc.querySelector("[data-uizoom]");
+  ok(out && out.textContent === "110%", `Settings → Appearance shows the interface size (${out && out.textContent})`);
+  n = calls.length;
+  doc.querySelector('[data-uiact="bigger"]').click();
+  await tick(20);
+  ok(zooms(n)[0] === 1.25 && out.textContent === "125%", "its A+ makes it larger");
+  doc.querySelector('[data-uiact="reset"]').click();
+  await tick(20);
+  ok(out.textContent === "100%", "and Reset puts it back");
+  closeSheetIfOpen();
+  n = calls.length;
+  press("0", { ctrlKey: true, altKey: true });
+  await tick(20);
+  ok(zooms(n)[0] === 1, "Ctrl+Alt+0 resets it too");
 }
 
 console.log("\nno uncaught errors");

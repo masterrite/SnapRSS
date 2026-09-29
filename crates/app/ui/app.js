@@ -389,6 +389,28 @@ function textSmaller() {
 }
 function textReset() { setTextScale(1); }
 
+// ------------------------------------------------------- interface size
+// The whole window, zoomed as a browser's Ctrl and + would, so text, icons,
+// rows and panels grow together. The article text size above sits on top
+// of it. Applied and stored by the backend, which sets it again before the
+// window is shown at the next launch.
+const UI_STEPS = [0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
+let uiZoomNow = 1;
+async function setUiZoom(v, { quiet = false } = {}) {
+  uiZoomNow = await invoke("set_ui_zoom", { scale: v }).catch(() => uiZoomNow);
+  if (!quiet) toast(`Interface size ${Math.round(uiZoomNow * 100)}%`);
+  const out = document.querySelector("[data-uizoom]");
+  if (out) out.textContent = `${Math.round(uiZoomNow * 100)}%`;
+}
+function uiStep(dir) {
+  // The nearest step, so a value from elsewhere still moves one step.
+  const i = UI_STEPS.reduce((best, s, k) => Math.abs(s - uiZoomNow) < Math.abs(UI_STEPS[best] - uiZoomNow) ? k : best, 0);
+  return setUiZoom(UI_STEPS[Math.max(0, Math.min(UI_STEPS.length - 1, i + dir))]);
+}
+function uiBigger() { return uiStep(1); }
+function uiSmaller() { return uiStep(-1); }
+function uiReset() { return setUiZoom(1); }
+
 /// Icons arrive as data: URLs, which can be tens of KB each. Written into
 /// every row they made the list's HTML megabytes long, rebuilt on each
 /// click; turned into short blob: URLs once, each row carries a reference.
@@ -1994,7 +2016,12 @@ function appMenu() {
         { label: "Classic", checked: layout === "classic", run: () => setLayout("classic") },
         { label: "Newspaper", checked: layout === "newspaper", run: () => setLayout("newspaper") },
       ]},
-      { label: "Text size", items: [
+      { label: "Interface size", items: [
+        { label: "Larger", hint: keyHint("uiBigger"), run: uiBigger },
+        { label: "Smaller", hint: keyHint("uiSmaller"), run: uiSmaller },
+        { label: "Reset", hint: keyHint("uiReset"), run: uiReset },
+      ]},
+      { label: "Article text size", items: [
         { label: "Larger", hint: keyHint("textBigger"), run: textBigger },
         { label: "Smaller", hint: keyHint("textSmaller"), run: textSmaller },
         { label: "Reset", hint: keyHint("textReset"), run: textReset },
@@ -2387,6 +2414,17 @@ async function settingsPage(k, v) {
       ${sw("_cats", $("#cats-head").getAttribute("aria-expanded") === "true")}
     </div>
 
+    <div class="grp">INTERFACE</div>
+    <div class="fld">
+      <label>Interface size</label>
+      <span class="grow1"></span>
+      <button class="mini" data-uiact="smaller" title="Smaller (${esc(keyHint("uiSmaller") || "")})">A&#8722;</button>
+      <span class="textsize" data-uizoom>${Math.round(uiZoomNow * 100)}%</span>
+      <button class="mini" data-uiact="bigger" title="Larger (${esc(keyHint("uiBigger") || "")})">A+</button>
+      <button class="pill" data-uiact="reset">Reset</button>
+    </div>
+    <div class="fld"><span class="note">Everything in the window: lists, toolbars, menus and dialogs. Applies straight away.</span></div>
+
     <div class="grp">READING PANE</div>
     <div class="fld">
       <label>Article text size</label>
@@ -2728,6 +2766,10 @@ function wireSheet(host, pending, render) {
       refreshKeyTips();
       render("shortcuts");
     });
+
+  host.querySelectorAll("[data-uiact]").forEach((b) => {
+    b.onclick = () => ({ bigger: uiBigger, smaller: uiSmaller, reset: uiReset })[b.dataset.uiact]();
+  });
 
   host.querySelectorAll("[data-textact]").forEach((b) => {
     b.onclick = () => ({ bigger: textBigger, smaller: textSmaller, reset: textReset })[b.dataset.textact]();
@@ -3880,13 +3922,17 @@ const KEY_ACTIONS = [
   ["update",      "Update all",                   "F5",      () => $("#btn-update").click()],
   ["addFeed",     "Add feed",                     "Ctrl+N",  () => addFeed()],
   ["settings",    "Settings",                     "Ctrl+,",  () => openSettings()],
-  ["textBigger",  "Larger text",                  "Ctrl+=",  () => textBigger()],
-  ["textSmaller", "Smaller text",                 "Ctrl+-",  () => textSmaller()],
-  ["textReset",   "Normal text size",             "Ctrl+0",  () => textReset()],
+  ["textBigger",  "Larger article text",          "Ctrl+=",  () => textBigger()],
+  ["textSmaller", "Smaller article text",         "Ctrl+-",  () => textSmaller()],
+  ["textReset",   "Normal article text size",     "Ctrl+0",  () => textReset()],
+  ["uiBigger",    "Larger interface",             "Ctrl+Alt+=", () => uiBigger()],
+  ["uiSmaller",   "Smaller interface",            "Ctrl+Alt+-", () => uiSmaller()],
+  ["uiReset",     "Normal interface size",        "Ctrl+Alt+0", () => uiReset()],
   ["quit",        "Exit",                         "Ctrl+Q",  () => invoke("quit_app")],
 ];
 const KEY_GROUPS = [
-  ["READING", ["next", "prev", "openBrowser", "textBigger", "textSmaller", "textReset"]],
+  ["READING", ["next", "prev", "openBrowser"]],
+  ["SIZE", ["uiBigger", "uiSmaller", "uiReset", "textBigger", "textSmaller", "textReset"]],
   ["MARKING", ["star", "toggleRead", "labels", "markAllRead", "delete", "undo"]],
   ["SELECTION", ["extendNext", "extendPrev", "selectAll"]],
   ["ELSEWHERE", ["search", "update", "addFeed", "settings", "quit"]],
@@ -4220,7 +4266,12 @@ async function refreshStatus() {
   // Then the plumbing that has no effect on the first paint. The backend
   // already applied close-to-tray from the database at launch.
   invoke("get_settings")
-    .then((v) => applyTrayBehaviour({ ...SETTING_DEFAULTS, ...v }))
+    .then((v) => {
+      applyTrayBehaviour({ ...SETTING_DEFAULTS, ...v });
+      // Applied by the backend already; known here for the Settings page.
+      const z = Number(v["window.ui_zoom"]);
+      if (z > 0) uiZoomNow = z;
+    })
     .catch(() => {});
   try {
     getCurrentWindow().onResized(async () => {

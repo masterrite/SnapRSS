@@ -2032,6 +2032,44 @@ pub async fn set_autostart(app: tauri::AppHandle, on: bool) -> Res<bool> {
     Ok(mgr.is_enabled().unwrap_or(on))
 }
 
+/// How much the whole window is zoomed, as a browser's Ctrl and + does, so
+/// text, icons, rows and panels grow together: the layout is in fixed pixel
+/// sizes, and enlarging only the fonts overflowed rows and buttons. Kept
+/// here as f64 bits, set from the database at launch and applied again
+/// before the window is first shown, which WebView2 needs because a zoom
+/// set before the page has loaded does not always survive the load.
+pub static UI_ZOOM: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0x3FF0_0000_0000_0000); // 1.0
+
+pub fn clamp_ui_zoom(v: f64) -> f64 {
+    if v.is_finite() { v.clamp(0.7, 2.0) } else { 1.0 }
+}
+
+pub fn ui_zoom() -> f64 {
+    f64::from_bits(UI_ZOOM.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Zoom the whole window and remember it. Stored as `window.ui_zoom`: the
+/// Settings sheet saves every setting as it was when it opened, but never
+/// `window.*`, so a Save there cannot put back an older size.
+#[tauri::command]
+pub async fn set_ui_zoom(app: tauri::AppHandle, state: State<'_, AppState>, scale: f64) -> Res<f64> {
+    use tauri::Manager;
+    let scale = clamp_ui_zoom(scale);
+    UI_ZOOM.store(scale.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    if let Some(w) = app.get_webview_window("main") {
+        w.set_zoom(scale).map_err(|e| CommandError::Invalid(format!("zoom: {e}")))?;
+    }
+    let db = state.db.lock().await;
+    db.conn()
+        .execute(
+            "INSERT INTO settings(key, value) VALUES('window.ui_zoom', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [scale.to_string()],
+        )
+        .map_err(DbError::from)?;
+    Ok(scale)
+}
+
 /// The command Windows runs at login: the program's path in quotes.
 ///
 /// The autostart plugin writes the path bare. SnapRSS installs under the
