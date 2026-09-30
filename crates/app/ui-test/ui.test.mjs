@@ -195,7 +195,6 @@ async function invoke(cmd, args) {
     case "set_expanded": TREE.find((n) => n.id === args.id).expanded = args.expanded; return null;
     case "autostart_enabled": return autostart.value;
     case "set_autostart": autostart.value = args.on; return args.on;
-    case "set_ui_zoom": return Math.min(2, Math.max(0.7, args.scale));
     case "set_close_to_tray": return null;
     case "quit_app": return null;
     default: throw new Error(`unknown command ${cmd}`);
@@ -2725,39 +2724,77 @@ console.log("\nlist drawing");
   window.eval('applyTrayBehaviour({ "reading.mark_read_on_open": "1" })');
 }
 
-console.log("\ninterface size");
+console.log("\ninterface text size");
 {
   closeSheetIfOpen();
   const press = (k, o = {}) => doc.body.dispatchEvent(new window.KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true, ...o }));
-  const zooms = (from) => calls.slice(from).filter(([c]) => c === "set_ui_zoom").map(([, a]) => a.scale);
-  let n = calls.length;
+  const fs = () => doc.documentElement.style.getPropertyValue("--fs");
   press("=", { ctrlKey: true, altKey: true });
   await tick(20);
   press("=", { ctrlKey: true, altKey: true });
   await tick(20);
   press("-", { ctrlKey: true, altKey: true });
   await tick(20);
-  ok(JSON.stringify(zooms(n)) === JSON.stringify([1.1, 1.25, 1.1]), `Ctrl+Alt+= and Ctrl+Alt+- step the interface size (${zooms(n)})`);
+  ok(fs() === "1.1" && window.localStorage.getItem("uiFont") === "1.1",
+     `Ctrl+Alt+= and Ctrl+Alt+- step the interface text size (${fs()})`);
   ok(window.__appEval("textScale()") === 1, "without touching the article text size");
+  ok(!doc.documentElement.style.zoom && !calls.some(([c]) => c === "set_ui_zoom"), "and without zooming the window");
 
   window.eval("openSettings()");
   await tick(80);
-  doc.querySelector('.sheet [data-page="appearance"], .sheet [data-k="appearance"]')?.click();
+  doc.querySelector('.sheet [data-page="appearance"]')?.click();
   await tick(40);
-  const out = doc.querySelector("[data-uizoom]");
-  ok(out && out.textContent === "110%", `Settings → Appearance shows the interface size (${out && out.textContent})`);
-  n = calls.length;
+  const out = doc.querySelector("[data-uifont]");
+  ok(out && out.textContent === "110%", `Settings → Appearance shows it (${out && out.textContent})`);
   doc.querySelector('[data-uiact="bigger"]').click();
   await tick(20);
-  ok(zooms(n)[0] === 1.25 && out.textContent === "125%", "its A+ makes it larger");
+  ok(fs() === "1.2" && out.textContent === "120%", "its A+ makes it larger");
   doc.querySelector('[data-uiact="reset"]').click();
   await tick(20);
-  ok(out.textContent === "100%", "and Reset puts it back");
+  ok(fs() === "1" && out.textContent === "100%", "and Reset puts it back");
   closeSheetIfOpen();
-  n = calls.length;
-  press("0", { ctrlKey: true, altKey: true });
+
+  // The stylesheet scales text outside the article, and not the article.
+  const css = [...doc.querySelectorAll("style")].map((x) => x.textContent).join("\n");
+  ok(/\.item \.t \{ font-size: calc\(var\(--title-size\) \* var\(--fs\)\)/.test(css)
+     && /\.prose \{[^}]*font-size: 17\.5px/.test(css),
+     "list titles follow it; article text keeps its own size");
+}
+
+console.log("\ntoolbar overflow");
+{
+  closeSheetIfOpen();
+  // jsdom lays nothing out: give the main bar a width, and its buttons one
+  // each, so it overflows the way a narrow window does.
+  const bar = $("#toolbar");
+  const shown = () => [...bar.children].filter((c) => !c.hidden && !c.classList.contains("ovf")
+    && window.getComputedStyle(c).display !== "none");
+  let room = 2000;
+  Object.defineProperty(bar, "clientWidth", { configurable: true, get: () => room });
+  Object.defineProperty(bar, "scrollWidth", { configurable: true, get: () => shown().length * 100 });
+  window.eval("fitToolbars()");
+  ok(!bar.querySelector(".tb-more"), "a bar with room has no » button");
+
+  room = 750;
+  window.eval("fitToolbars()");
+  const gone = [...bar.querySelectorAll(":scope > .ovf[data-cmd]")].map((c) => c.dataset.cmd);
+  ok(!!bar.querySelector(".tb-more") && gone.length > 0 && shown().length * 100 <= room,
+     `a narrow bar puts what does not fit into » (${gone})`);
+  ok(gone.includes("settings") && !gone.includes("appmenu"), "starting from the end");
+
+  bar.querySelector(".tb-more").click();
   await tick(20);
-  ok(zooms(n)[0] === 1, "Ctrl+Alt+0 resets it too");
+  const labels = [...doc.querySelectorAll(".ctx [role=menuitem], .ctx button")].map((b) => b.textContent.trim());
+  ok(labels.some((l) => l.startsWith("Settings")), `the » menu lists them (${labels.slice(0, 6)})`);
+  [...doc.querySelectorAll(".ctx [role=menuitem], .ctx button")].find((b) => b.textContent.trim().startsWith("Settings")).click();
+  await tick(80);
+  ok(!!$(".sheet"), "and runs them: Settings opens");
+  closeSheetIfOpen();
+
+  room = 2000;
+  window.eval("fitToolbars()");
+  ok(!bar.querySelector(".tb-more") && !bar.querySelector(".ovf"), "with room again, everything is back on the bar");
+  delete bar.clientWidth; delete bar.scrollWidth;
 }
 
 console.log("\nno uncaught errors");

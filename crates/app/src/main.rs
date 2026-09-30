@@ -81,14 +81,6 @@ fn main() {
             let to_tray = setting("startup.close_to_tray", false);
             let update_on_start = setting("update.on_startup", true);
             let min_to_tray = setting("startup.minimize_to_tray", false);
-            let ui_zoom = db
-                .conn()
-                .query_row("SELECT value FROM settings WHERE key = 'window.ui_zoom'", [], |r| r.get::<_, String>(0))
-                .ok()
-                .and_then(|v| v.parse::<f64>().ok())
-                .map(commands::clamp_ui_zoom)
-                .unwrap_or(1.0);
-            commands::UI_ZOOM.store(ui_zoom.to_bits(), std::sync::atomic::Ordering::Relaxed);
             let placement: Option<String> = db
                 .conn()
                 .query_row(
@@ -140,9 +132,6 @@ fn main() {
             if let Some(w) = app.get_webview_window("main") {
                 #[cfg(windows)]
                 set_window_icons(&w);
-                if ui_zoom != 1.0 {
-                    let _ = w.set_zoom(ui_zoom);
-                }
                 // The window is created hidden (tauri.conf.json), moved and
                 // sized here while still hidden, and shown once the page has
                 // drawn its content (`window_ready`), so it opens in its
@@ -415,7 +404,6 @@ fn main() {
             commands::apply_filters_now,
             commands::move_node,
             commands::set_expanded,
-            commands::set_ui_zoom,
             commands::set_autostart,
             commands::autostart_enabled,
             commands::set_close_to_tray,
@@ -735,13 +723,6 @@ fn show_pending(app: &tauri::AppHandle) {
 /// The page has drawn its content: show the window.
 #[tauri::command]
 fn window_ready(app: tauri::AppHandle) {
-    // Again now that the page has loaded, before anyone sees it.
-    let zoom = commands::ui_zoom();
-    if zoom != 1.0 {
-        if let Some(w) = app.get_webview_window("main") {
-            let _ = w.set_zoom(zoom);
-        }
-    }
     show_pending(&app);
 }
 

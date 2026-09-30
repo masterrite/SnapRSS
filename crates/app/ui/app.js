@@ -390,26 +390,34 @@ function textSmaller() {
 function textReset() { setTextScale(1); }
 
 // ------------------------------------------------------- interface size
-// The whole window, zoomed as a browser's Ctrl and + would, so text, icons,
-// rows and panels grow together. The article text size above sits on top
-// of it. Applied and stored by the backend, which sets it again before the
-// window is shown at the next launch.
-const UI_STEPS = [0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
-let uiZoomNow = 1;
-async function setUiZoom(v, { quiet = false } = {}) {
-  uiZoomNow = await invoke("set_ui_zoom", { scale: v }).catch(() => uiZoomNow);
-  if (!quiet) toast(`Interface size ${Math.round(uiZoomNow * 100)}%`);
-  const out = document.querySelector("[data-uizoom]");
-  if (out) out.textContent = `${Math.round(uiZoomNow * 100)}%`;
+// Text everywhere outside the article, per machine. The stylesheet
+// multiplies every such font size, and the height of every box that holds a
+// line of text, by --fs; panel widths and icons stay as they are, so the
+// window keeps its layout and the toolbars move what no longer fits into
+// their » menu (fitToolbars).
+const UI_STEPS = [0.9, 1, 1.1, 1.2, 1.35, 1.5];
+function uiFont() {
+  let v = 1;
+  try { v = Number(localStorage.getItem("uiFont")) || 1; } catch {}
+  return UI_STEPS.includes(v) ? v : 1;
 }
-function uiStep(dir) {
-  // The nearest step, so a value from elsewhere still moves one step.
-  const i = UI_STEPS.reduce((best, s, k) => Math.abs(s - uiZoomNow) < Math.abs(UI_STEPS[best] - uiZoomNow) ? k : best, 0);
-  return setUiZoom(UI_STEPS[Math.max(0, Math.min(UI_STEPS.length - 1, i + dir))]);
+function setUiFont(v, { quiet = false } = {}) {
+  document.documentElement.style.setProperty("--fs", String(v));
+  try { localStorage.setItem("uiFont", String(v)); } catch {}
+  if (!quiet) toast(`Interface text ${Math.round(v * 100)}%`);
+  const out = document.querySelector("[data-uifont]");
+  if (out) out.textContent = `${Math.round(v * 100)}%`;
+  fitToolbars();
 }
-function uiBigger() { return uiStep(1); }
-function uiSmaller() { return uiStep(-1); }
-function uiReset() { return setUiZoom(1); }
+function uiBigger() {
+  const i = UI_STEPS.indexOf(uiFont());
+  setUiFont(UI_STEPS[Math.min(UI_STEPS.length - 1, i + 1)]);
+}
+function uiSmaller() {
+  const i = UI_STEPS.indexOf(uiFont());
+  setUiFont(UI_STEPS[Math.max(0, i - 1)]);
+}
+function uiReset() { setUiFont(1); }
 
 /// Icons arrive as data: URLs, which can be tens of KB each. Written into
 /// every row they made the list's HTML megabytes long, rebuilt on each
@@ -2016,7 +2024,7 @@ function appMenu() {
         { label: "Classic", checked: layout === "classic", run: () => setLayout("classic") },
         { label: "Newspaper", checked: layout === "newspaper", run: () => setLayout("newspaper") },
       ]},
-      { label: "Interface size", items: [
+      { label: "Interface text size", items: [
         { label: "Larger", hint: keyHint("uiBigger"), run: uiBigger },
         { label: "Smaller", hint: keyHint("uiSmaller"), run: uiSmaller },
         { label: "Reset", hint: keyHint("uiReset"), run: uiReset },
@@ -2110,6 +2118,7 @@ function setDensity(d) {
     x.setAttribute("aria-pressed", String(x.dataset.density === d)));
   // Label chips are drawn differently in compact.
   renderList();
+  fitToolbars();
 }
 
 async function backupDatabase() {
@@ -2416,14 +2425,14 @@ async function settingsPage(k, v) {
 
     <div class="grp">INTERFACE</div>
     <div class="fld">
-      <label>Interface size</label>
+      <label>Text size</label>
       <span class="grow1"></span>
       <button class="mini" data-uiact="smaller" title="Smaller (${esc(keyHint("uiSmaller") || "")})">A&#8722;</button>
-      <span class="textsize" data-uizoom>${Math.round(uiZoomNow * 100)}%</span>
+      <span class="textsize" data-uifont>${Math.round(uiFont() * 100)}%</span>
       <button class="mini" data-uiact="bigger" title="Larger (${esc(keyHint("uiBigger") || "")})">A+</button>
       <button class="pill" data-uiact="reset">Reset</button>
     </div>
-    <div class="fld"><span class="note">Everything in the window: lists, toolbars, menus and dialogs. Applies straight away.</span></div>
+    <div class="fld"><span class="note">Feeds, articles list, toolbars, menus and dialogs. Stored on this computer.</span></div>
 
     <div class="grp">READING PANE</div>
     <div class="fld">
@@ -3689,6 +3698,88 @@ function applyToolbars(cfg = toolbarConfig()) {
       grow ? bar.insertBefore(el, grow) : bar.append(el);
     }
   }
+  fitToolbars();
+}
+
+// A bar is fitted again whenever its width changes: the window, a dragged
+// panel edge. Its own buttons coming and going does not change its width.
+if (typeof ResizeObserver === "function") {
+  const watch = new ResizeObserver((entries) => entries.forEach((e) => fitToolbar(e.target)));
+  for (const spec of Object.values(TOOLBARS)) { const bar = $(spec.el); if (bar) watch.observe(bar); }
+}
+document.fonts?.ready?.then(() => fitToolbars());
+
+// ------------------------------------------------------ toolbar overflow
+//
+// A bar never runs past its edge. When its buttons do not fit (a narrow
+// window, a wide panel, larger interface text, text labels), they leave the
+// bar from the end and wait in its » menu, which runs the same buttons.
+// Buttons are only hidden, never moved, so everything bound to them keeps
+// working, and the bar's own order and settings are left alone.
+
+function fitToolbars() {
+  for (const spec of Object.values(TOOLBARS)) {
+    const bar = $(spec.el);
+    if (bar) fitToolbar(bar);
+  }
+}
+
+function fitToolbar(bar) {
+  let more = bar.querySelector(":scope > .tb-more");
+  if (!more) {
+    more = document.createElement("button");
+    more.className = "ibtn tb-more";
+    // No tooltip: the system draws it over the menu that opens below.
+    more.setAttribute("aria-label", "More");
+    more.setAttribute("aria-haspopup", "true");
+    more.innerHTML = '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3.5 4.5L7 8l-3.5 3.5M8.5 4.5L12 8l-3.5 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    more.onclick = (e) => { e.stopPropagation(); openOverflow(bar, more); };
+  }
+  bar.querySelectorAll(":scope > .ovf").forEach((el) => el.classList.remove("ovf"));
+  more.remove();
+  if (bar.hidden || !bar.clientWidth || bar.scrollWidth <= bar.clientWidth + 1) return;
+
+  bar.insertBefore(more, bar.querySelector(":scope > .grow"));
+  const items = [...bar.children].filter((el) =>
+    el !== more && !el.hidden && (el.dataset.cmd || el.classList.contains("sep")));
+  for (let k = items.length - 1; k >= 0 && bar.scrollWidth > bar.clientWidth + 1; k--) {
+    items[k].classList.add("ovf");
+  }
+  // A separator left with nothing after it before the » button goes too.
+  for (let el = more.previousElementSibling; el && (el.classList.contains("sep") || el.classList.contains("ovf") || el.hidden); el = el.previousElementSibling) {
+    if (el.classList.contains("sep")) el.classList.add("ovf");
+  }
+}
+
+/// What a toolbar button is called in a menu: its label, the text of a
+/// text button, or its tooltip without the shortcut.
+function toolbarItemName(el) {
+  const label = el.querySelector(".tlabel")?.textContent.trim();
+  if (label) return label;
+  if (el.classList.contains("pill")) return el.textContent.trim();
+  if (el.title) return el.title.replace(/\s*\([^)]*\)\s*$/, "");
+  return el.textContent.trim();
+}
+
+function openOverflow(bar, more) {
+  const run = (el) => () => {
+    // Menus that open under their button open under » instead.
+    toolbarAnchor = more;
+    try { el.click(); } finally { toolbarAnchor = null; }
+  };
+  const items = [...bar.querySelectorAll(":scope > .ovf[data-cmd]")].map((el) => {
+    if (el.classList.contains("seg")) {
+      return {
+        label: el.dataset.cmd === "layout" ? "Layout" : el.dataset.cmd === "density" ? "Density" : el.dataset.cmd,
+        items: [...el.querySelectorAll("button")].map((b) => ({
+          label: b.textContent.trim(), checked: b.getAttribute("aria-pressed") === "true", run: run(b),
+        })),
+      };
+    }
+    return { label: toolbarItemName(el), disabled: !!el.disabled, run: run(el) };
+  });
+  const r = more.getBoundingClientRect();
+  showCtx(r.left, r.bottom + 4, items);
 }
 
 // ---------------------------------------------------------------- resizing
@@ -3925,9 +4016,9 @@ const KEY_ACTIONS = [
   ["textBigger",  "Larger article text",          "Ctrl+=",  () => textBigger()],
   ["textSmaller", "Smaller article text",         "Ctrl+-",  () => textSmaller()],
   ["textReset",   "Normal article text size",     "Ctrl+0",  () => textReset()],
-  ["uiBigger",    "Larger interface",             "Ctrl+Alt+=", () => uiBigger()],
-  ["uiSmaller",   "Smaller interface",            "Ctrl+Alt+-", () => uiSmaller()],
-  ["uiReset",     "Normal interface size",        "Ctrl+Alt+0", () => uiReset()],
+  ["uiBigger",    "Larger interface text",        "Ctrl+Alt+=", () => uiBigger()],
+  ["uiSmaller",   "Smaller interface text",       "Ctrl+Alt+-", () => uiSmaller()],
+  ["uiReset",     "Normal interface text size",   "Ctrl+Alt+0", () => uiReset()],
   ["quit",        "Exit",                         "Ctrl+Q",  () => invoke("quit_app")],
 ];
 const KEY_GROUPS = [
@@ -4228,6 +4319,7 @@ async function refreshStatus() {
 (async function start() {
   applyTheme(localStorage.getItem("theme") || "system");
   setTextScale(textScale(), { quiet: true });
+  setUiFont(uiFont(), { quiet: true });
   const d = localStorage.getItem("density") || "relaxed";
   document.documentElement.dataset.density = d;
   $("#seg-density").querySelectorAll("button").forEach((x) =>
@@ -4268,9 +4360,6 @@ async function refreshStatus() {
   invoke("get_settings")
     .then((v) => {
       applyTrayBehaviour({ ...SETTING_DEFAULTS, ...v });
-      // Applied by the backend already; known here for the Settings page.
-      const z = Number(v["window.ui_zoom"]);
-      if (z > 0) uiZoomNow = z;
     })
     .catch(() => {});
   try {

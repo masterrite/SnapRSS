@@ -34,6 +34,10 @@
     --star:        #C79A2E;
     --unread:      #2F6CB5;
     --bad:         #B33A35;
+    /* Interface text size: every size of text outside the article, and the
+       height of every box that holds a line of it, is multiplied by this.
+       Settings → Appearance sets it. */
+    --fs: 1;
     --row:         62px;
     --title-size:  13.5px;
     --meta-size:   11.5px;
@@ -61,7 +65,7 @@
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
   body {
-    font-family: var(--ui); font-size: 13px; color: var(--ink);
+    font-family: var(--ui); font-size: calc(13px * var(--fs)); color: var(--ink);
     background: var(--page); display: flex; flex-direction: column;
     overflow: hidden; -webkit-font-smoothing: antialiased;
   }
@@ -73,13 +77,13 @@
     display: flex; align-items: center; gap: 3px; padding: 0 8px;
     background: var(--bar); border-bottom: 1px solid var(--line); flex-shrink: 0;
   }
-  #toolbar { height: 48px; gap: 5px; padding: 0 12px; }
-  .panel-bar { height: 36px; }
-  :root[data-density="compact"] #toolbar { height: 34px; }
-  :root[data-density="compact"] .panel-bar { height: 26px; }
+  #toolbar { height: calc(48px * var(--fs)); gap: 5px; padding: 0 12px; }
+  .panel-bar { height: calc(36px * var(--fs)); }
+  :root[data-density="compact"] #toolbar { height: calc(34px * var(--fs)); }
+  :root[data-density="compact"] .panel-bar { height: calc(26px * var(--fs)); }
 
   .ibtn {
-    width: 30px; height: 30px; border-radius: 7px; display: flex;
+    width: calc(30px * var(--fs)); height: calc(30px * var(--fs)); border-radius: 7px; display: flex;
     align-items: center; justify-content: center; color: var(--ink-3); flex-shrink: 0;
   }
   .ibtn:hover { background: var(--sel); }
@@ -89,32 +93,32 @@
      behind them. In CSS, because var() does not resolve inside an SVG fill
      attribute. */
   .knob { fill: var(--bar); }
-  .panel-bar .ibtn { width: 26px; height: 26px; border-radius: 6px; }
+  .panel-bar .ibtn { width: calc(26px * var(--fs)); height: calc(26px * var(--fs)); border-radius: 6px; }
   .sep { width: 1px; height: 18px; background: var(--line); margin: 0 4px; flex-shrink: 0; }
   .grow { flex: 1 1 auto; }
 
   .primary {
-    display: flex; align-items: center; gap: 7px; height: 30px; padding: 0 12px;
+    display: flex; align-items: center; gap: 7px; height: calc(30px * var(--fs)); padding: 0 12px;
     border-radius: 7px; background: var(--accent); color: var(--on-accent);
-    font-size: 12.5px; font-weight: 600; flex-shrink: 0;
+    font-size: calc(12.5px * var(--fs)); font-weight: 600; flex-shrink: 0;
   }
   .primary:hover { filter: brightness(1.07); }
   .pill {
-    display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px;
+    display: flex; align-items: center; gap: 6px; height: calc(28px * var(--fs)); padding: 0 10px;
     border-radius: 7px; border: 1px solid var(--line); background: var(--page);
-    color: var(--ink-2); font-size: 12px; flex-shrink: 0;
+    color: var(--ink-2); font-size: calc(12px * var(--fs)); flex-shrink: 0;
   }
   .pill:hover { background: var(--sel); }
   .seg { display: flex; padding: 2px; border-radius: 8px; background: var(--sel); border: 1px solid var(--line); flex-shrink: 0; }
-  .seg button { height: 24px; padding: 0 11px; border-radius: 6px; color: var(--ink-4); font-size: 12px; }
+  .seg button { height: calc(24px * var(--fs)); padding: 0 11px; border-radius: 6px; color: var(--ink-4); font-size: calc(12px * var(--fs)); }
   .seg button[aria-pressed="true"] { background: var(--page); color: var(--ink); font-weight: 500; }
 
   #search {
-    display: flex; align-items: center; gap: 8px; width: 230px; height: 30px;
+    display: flex; align-items: center; gap: 8px; width: 230px; height: calc(30px * var(--fs));
     padding: 0 11px; border-radius: 8px; background: var(--page); border: 1px solid var(--line);
   }
-  #search input { flex: 1; min-width: 0; border: 0; background: none; outline: none; color: var(--ink); font-size: 12.5px; }
-  kbd { font-family: var(--mono); font-size: 10.5px; color: var(--ink-4); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+  #search input { flex: 1; min-width: 0; border: 0; background: none; outline: none; color: var(--ink); font-size: calc(12.5px * var(--fs)); }
+  kbd { font-family: var(--mono); font-size: calc(10.5px * var(--fs)); color: var(--ink-4); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
 
   /* Widths are custom properties so the grips can move them without
      rewriting the template. */
@@ -135,9 +139,9 @@
   .vgrip:hover, .hgrip:hover, .vgrip.dragging, .hgrip.dragging { background: var(--accent); }
   body.resizing { cursor: col-resize; user-select: none; }
   body.resizing-v { cursor: row-resize; user-select: none; }
-  #feeds { background: var(--sidebar); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
-  #listpane { background: var(--list); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
-  #readpane { background: var(--page); display: flex; flex-direction: column; min-height: 0; }
+  #feeds { background: var(--sidebar); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+  #listpane { background: var(--list); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+  #readpane { background: var(--page); display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 
   #tree { flex: 1; overflow-y: auto; padding: 4px 8px 12px; min-height: 60px; }
 
@@ -145,9 +149,9 @@
      scroll, so a long subscription list never pushes them off screen. */
   #cats { flex-shrink: 0; border-top: 1px solid var(--line); background: var(--sidebar); display: flex; flex-direction: column; }
   #cats-head {
-    display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px;
+    display: flex; align-items: center; gap: 6px; height: calc(26px * var(--fs)); padding: 0 10px;
     width: 100%; text-align: left; flex-shrink: 0;
-    font-size: 10px; font-weight: 600; letter-spacing: 1.1px; color: var(--ink-4);
+    font-size: calc(10px * var(--fs)); font-weight: 600; letter-spacing: 1.1px; color: var(--ink-4);
   }
   #cats-head:hover { color: var(--ink-2); }
   #cats-head .chev { transition: transform .14s; flex-shrink: 0; }
@@ -156,18 +160,18 @@
   #cats-head[aria-expanded="false"] + #catlist { display: none; }
   #cats:has(#cats-head[aria-expanded="false"]) { flex: 0 0 auto; }
   .node {
-    display: flex; align-items: center; gap: 8px; width: 100%; height: 27px;
-    padding: 0 8px; border-radius: 6px; text-align: left; color: var(--ink-2); font-size: 12.5px;
+    display: flex; align-items: center; gap: 8px; width: 100%; height: calc(27px * var(--fs));
+    padding: 0 8px; border-radius: 6px; text-align: left; color: var(--ink-2); font-size: calc(12.5px * var(--fs));
     cursor: default; user-select: none; box-sizing: border-box;
   }
   .node:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   /* Chromium needs this to drag a non-anchor element that contains text. */
   .node[draggable="true"] { -webkit-user-drag: element; }
-  :root[data-density="compact"] .node { height: 20px; font-size: 11.5px; }
+  :root[data-density="compact"] .node { height: calc(20px * var(--fs)); font-size: calc(11.5px * var(--fs)); }
   .node:hover { background: var(--sel); }
   .node[aria-current="true"] { background: var(--sel-soft); font-weight: 600; color: var(--ink); }
   .node .label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .node .count { font-size: 11px; color: var(--ink-4); font-variant-numeric: tabular-nums; }
+  .node .count { font-size: calc(11px * var(--fs)); color: var(--ink-4); font-variant-numeric: tabular-nums; }
   .node[aria-current="true"] .count { color: var(--accent-text); font-weight: 600; }
   .favicon {
     width: 16px; height: 16px; border-radius: 4px; flex-shrink: 0; color: #fff;
@@ -191,15 +195,15 @@
   .caticon[data-tone="unread"] { color: var(--unread); }
   .caticon[data-tone="star"]   { color: var(--star); }
   .caticon[data-tone="dim"]    { color: var(--ink-4); }
-  .caption { padding: 10px 8px 4px; font-size: 10px; font-weight: 600; letter-spacing: 1.1px; color: var(--ink-4); }
+  .caption { padding: 10px 8px 4px; font-size: calc(10px * var(--fs)); font-weight: 600; letter-spacing: 1.1px; color: var(--ink-4); }
   .rule { height: 1px; background: var(--line); margin: 8px 6px; }
 
   #listhead {
-    height: 30px; display: flex; align-items: center; gap: 10px; padding: 0 10px 0 14px;
+    height: calc(30px * var(--fs)); display: flex; align-items: center; gap: 10px; padding: 0 10px 0 14px;
     background: var(--sidebar); border-bottom: 1px solid var(--line); flex-shrink: 0;
-    font-size: 10px; font-weight: 600; letter-spacing: .9px; color: var(--ink-4);
+    font-size: calc(10px * var(--fs)); font-weight: 600; letter-spacing: .9px; color: var(--ink-4);
   }
-  :root[data-density="compact"] #listhead { height: 22px; }
+  :root[data-density="compact"] #listhead { height: calc(22px * var(--fs)); }
   #listhead .colsort { font: inherit; letter-spacing: inherit; color: inherit; text-align: left;
                        padding: 3px 4px; border-radius: 4px; }
   #listhead .colsort:hover { color: var(--ink-2); background: var(--sel-soft); }
@@ -209,31 +213,31 @@
             padding: 8px 10px; border-radius: 7px; border: 1px solid var(--line); background: var(--page); }
   .choice:hover:not(:disabled), .choice:focus-visible { border-color: var(--accent); }
   .choice:disabled { opacity: .55; cursor: default; }
-  .choice .c1 { font-size: 13px; color: var(--ink); }
-  .choice .c2 { font-size: 11px; color: var(--ink-4); font-family: var(--mono); word-break: break-all; }
+  .choice .c1 { font-size: calc(13px * var(--fs)); color: var(--ink); }
+  .choice .c2 { font-size: calc(11px * var(--fs)); color: var(--ink-4); font-family: var(--mono); word-break: break-all; }
   .keyedit { display: grid; grid-template-columns: 1fr auto 26px; gap: 4px 10px; align-items: center;
-             padding: 2px 8px 6px; font-size: 12.5px; color: var(--ink-2); }
-  .keybtn { min-width: 92px; height: 26px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--line);
+             padding: 2px 8px 6px; font-size: calc(12.5px * var(--fs)); color: var(--ink-2); }
+  .keybtn { min-width: 92px; height: calc(26px * var(--fs)); padding: 0 8px; border-radius: 6px; border: 1px solid var(--line);
             background: var(--page); text-align: center; }
   .keybtn:hover, .keybtn[aria-pressed="true"] { border-color: var(--accent); }
-  .textsize { min-width: 44px; text-align: center; font-variant-numeric: tabular-nums; font-size: 12.5px; color: var(--ink-2); }
-  #list .more { padding: 14px; text-align: center; font-size: 11.5px; color: var(--ink-4); }
+  .textsize { min-width: 44px; text-align: center; font-variant-numeric: tabular-nums; font-size: calc(12.5px * var(--fs)); color: var(--ink-2); }
+  #list .more { padding: 14px; text-align: center; font-size: calc(11.5px * var(--fs)); color: var(--ink-4); }
   #list { flex: 1; overflow-y: auto; }
   /* Focusable so J and K can take the keyboard away from a clicked feed; the
      selected row already shows where the reader is. */
   #list:focus { outline: none; }
-  .group { padding: 9px 14px 5px; font-size: 10px; font-weight: 600; letter-spacing: 1px; color: var(--ink-4); }
+  .group { padding: 9px 14px 5px; font-size: calc(10px * var(--fs)); font-weight: 600; letter-spacing: 1px; color: var(--ink-4); }
   :root[data-density="compact"] .group {
-    padding: 0 14px; height: 19px; display: flex; align-items: center;
-    background: var(--sidebar); border-bottom: 1px solid var(--line); font-size: 9.5px;
+    padding: 0 14px; height: calc(19px * var(--fs)); display: flex; align-items: center;
+    background: var(--sidebar); border-bottom: 1px solid var(--line); font-size: calc(9.5px * var(--fs));
   }
 
   .item { display: flex; gap: 10px; padding: 9px 14px; cursor: default; }
   .item:hover { background: var(--sel); }
   .item[aria-selected="true"] { background: var(--sel); }
-  .item .t { font-size: var(--title-size); font-weight: 700; color: var(--ink); line-height: 1.35; margin-bottom: 4px; }
+  .item .t { font-size: calc(var(--title-size) * var(--fs)); font-weight: 700; color: var(--ink); line-height: 1.35; margin-bottom: 4px; }
   .item.read .t { font-weight: 400; color: var(--ink-4); }
-  .item .m { display: flex; align-items: center; gap: 7px; font-size: var(--meta-size); color: var(--ink-3); }
+  .item .m { display: flex; align-items: center; gap: 7px; font-size: calc(var(--meta-size) * var(--fs)); color: var(--ink-3); }
   .item .star { color: var(--faint); flex-shrink: 0; display: flex; }
   .item .star.on { color: var(--star); }
 
@@ -260,14 +264,14 @@
   .item { user-select: none; }
 
   #selcount {
-    display: none; align-items: center; height: 20px; padding: 0 8px;
+    display: none; align-items: center; height: calc(20px * var(--fs)); padding: 0 8px;
     border-radius: 10px; background: var(--accent); color: var(--on-accent);
-    font-size: 11px; font-weight: 600; flex-shrink: 0;
+    font-size: calc(11px * var(--fs)); font-weight: 600; flex-shrink: 0;
   }
   #selcount.show { display: flex; }
 
   :root[data-density="compact"] .item {
-    height: var(--row); align-items: center; padding: 0 10px 0 6px;
+    height: calc(var(--row) * var(--fs)); align-items: center; padding: 0 10px 0 6px;
     border-bottom: 1px solid var(--line); gap: 8px;
   }
   :root[data-density="compact"] .item .marks { align-items: center; padding-top: 0; gap: 3px; }
@@ -279,14 +283,14 @@
   :root[data-density="compact"] .item .m .feed { display: none; }
   :root[data-density="compact"] .item .star { width: 16px; justify-content: center; padding: 0; }
 
-  .chip { padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; background: var(--sel); color: var(--ink-3); }
+  .chip { white-space: nowrap; padding: 1px 6px; border-radius: 4px; font-size: calc(10px * var(--fs)); font-weight: 600; background: var(--sel); color: var(--ink-3); }
 
-  #readbar { height: 44px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 4px; padding: 0 14px; flex-shrink: 0; }
-  :root[data-density="compact"] #readbar { height: 30px; }
+  #readbar { height: calc(44px * var(--fs)); border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 4px; padding: 0 14px; flex-shrink: 0; }
+  :root[data-density="compact"] #readbar { height: calc(30px * var(--fs)); }
   #openext {
-    display: flex; align-items: center; gap: 7px; height: 30px; padding: 0 10px 0 12px;
+    display: flex; align-items: center; gap: 7px; height: calc(30px * var(--fs)); padding: 0 10px 0 12px;
     border-radius: 7px; border: 1px solid var(--line); background: var(--bar);
-    color: var(--ink); font-size: 12.5px; font-weight: 500;
+    color: var(--ink); font-size: calc(12.5px * var(--fs)); font-weight: 500;
   }
   #openext:hover { background: var(--sel); }
 
@@ -325,17 +329,17 @@
   .prose a { color: var(--accent); }
 
   #status {
-    height: 26px; flex-shrink: 0; display: flex; align-items: center; gap: 14px;
+    height: calc(26px * var(--fs)); flex-shrink: 0; display: flex; align-items: center; gap: 14px;
     padding: 0 14px; background: var(--chrome); border-top: 1px solid var(--chrome-line);
-    font-size: 11px; color: var(--ink-3);
+    font-size: calc(11px * var(--fs)); color: var(--ink-3);
   }
-  .empty { padding: 60px 40px; color: var(--ink-4); font-size: 13.5px; text-align: center; }
+  .empty { padding: 60px 40px; color: var(--ink-4); font-size: calc(13.5px * var(--fs)); text-align: center; }
   .spin { animation: spin 900ms linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
   #toast {
     position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%);
     background: var(--ink); color: var(--page); padding: 9px 16px; border-radius: 8px;
-    font-size: 12.5px; opacity: 0; pointer-events: none; transition: opacity .18s;
+    font-size: calc(12.5px * var(--fs)); opacity: 0; pointer-events: none; transition: opacity .18s;
   }
   #toast.show { opacity: .95; }
   #toast { z-index: 90; }
@@ -345,16 +349,16 @@
     position: fixed; right: 16px; bottom: 36px; z-index: 85;
     display: flex; align-items: center; gap: 10px;
     background: var(--page); border: 1px solid var(--line); border-radius: 9px;
-    box-shadow: 0 8px 24px rgba(0,0,0,.18); padding: 8px 12px; font-size: 12.5px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.18); padding: 8px 12px; font-size: calc(12.5px * var(--fs));
   }
 
   .ctx {
-    position: fixed; z-index: 60; min-width: 196px; padding: 5px;
+    position: fixed; z-index: 60; min-width: calc(196px * var(--fs)); padding: 5px;
     background: var(--page); border: 1px solid var(--line); border-radius: 9px;
-    box-shadow: 0 12px 34px rgba(0,0,0,.20); font-size: 12.5px;
+    box-shadow: 0 12px 34px rgba(0,0,0,.20); font-size: calc(12.5px * var(--fs));
   }
   .ctx button {
-    display: flex; align-items: center; gap: 9px; width: 100%; height: 28px;
+    display: flex; align-items: center; gap: 9px; width: 100%; height: calc(28px * var(--fs));
     padding: 0 10px; border-radius: 6px; text-align: left; color: var(--ink-2);
   }
   .ctx button:hover { background: var(--sel); color: var(--ink); }
@@ -362,12 +366,12 @@
   .ctx button.danger { color: var(--bad); }
   .ctx .ctx-sep { height: 1px; background: var(--line); margin: 5px 7px; }
   .ctx .ctx-head {
-    padding: 5px 10px 7px; font-size: 10px; font-weight: 600; letter-spacing: 1px;
+    padding: 5px 10px 7px; font-size: calc(10px * var(--fs)); font-weight: 600; letter-spacing: 1px;
     color: var(--ink-4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .ctx .tick { width: 13px; flex-shrink: 0; color: var(--accent); }
   .ctx .ctx-label { flex: 1; white-space: nowrap; }
-  .ctx .ctx-hint { font-size: 11px; color: var(--ink-4); padding-left: 18px; flex-shrink: 0; }
+  .ctx .ctx-hint { font-size: calc(11px * var(--fs)); color: var(--ink-4); padding-left: 18px; flex-shrink: 0; }
   .ctx .ctx-arrow { flex-shrink: 0; margin-left: 10px; color: var(--ink-4); }
   .ctx button:hover .ctx-arrow { color: var(--ink-2); }
 
@@ -376,42 +380,42 @@
     align-items: center; justify-content: center; z-index: 55; }
   .sheet {
     background: var(--page); border: 1px solid var(--line); border-radius: 12px;
-    width: min(880px, calc(100vw - 80px)); height: min(640px, calc(100vh - 80px));
+    width: min(calc(880px * var(--fs)), calc(100vw - 40px)); height: min(calc(640px * var(--fs)), calc(100vh - 40px));
     display: flex; flex-direction: column; overflow: hidden;
     box-shadow: 0 24px 60px rgba(0,0,0,.28);
   }
   .sheet-top {
-    height: 50px; flex-shrink: 0; display: flex; align-items: center;
+    height: calc(50px * var(--fs)); flex-shrink: 0; display: flex; align-items: center;
     padding: 0 10px 0 20px; background: var(--chrome); border-bottom: 1px solid var(--chrome-line);
-    font-size: 14px; font-weight: 600;
+    font-size: calc(14px * var(--fs)); font-weight: 600;
   }
-  .sheet-body { flex: 1; display: grid; grid-template-columns: 186px 1fr; min-height: 0; }
+  .sheet-body { flex: 1; display: grid; grid-template-columns: calc(186px * var(--fs)) 1fr; min-height: 0; }
   .sheet-nav {
     background: var(--sidebar); border-right: 1px solid var(--line);
     padding: 10px 8px; display: flex; flex-direction: column; gap: 1px; overflow-y: auto;
   }
   .sheet-nav button {
-    display: flex; align-items: center; height: 30px; padding: 0 11px; border-radius: 7px;
-    width: 100%; text-align: left; font-size: 12.5px; color: var(--ink-3);
+    display: flex; align-items: center; height: calc(30px * var(--fs)); padding: 0 11px; border-radius: 7px;
+    width: 100%; text-align: left; font-size: calc(12.5px * var(--fs)); color: var(--ink-3); white-space: nowrap;
   }
   .sheet-nav button:hover { background: var(--sel); }
   .sheet-nav button[aria-current="true"] { background: var(--sel); color: var(--ink); font-weight: 600; }
   .sheet-page { padding: 22px 26px; overflow-y: auto; }
   .sheet-foot {
-    height: 56px; flex-shrink: 0; display: flex; align-items: center; gap: 9px;
+    height: calc(56px * var(--fs)); flex-shrink: 0; display: flex; align-items: center; gap: 9px;
     padding: 0 20px; background: var(--chrome); border-top: 1px solid var(--chrome-line);
   }
 
-  .grp { font-size: 10px; font-weight: 600; letter-spacing: 1px; color: var(--ink-4);
+  .grp { font-size: calc(10px * var(--fs)); font-weight: 600; letter-spacing: 1px; color: var(--ink-4);
          margin: 0 0 11px; }
   .grp:not(:first-child) { margin-top: 26px; }
-  .fld { display: flex; align-items: center; gap: 10px; min-height: 30px; margin-bottom: 9px; }
-  .fld > label:first-child { flex: 1; font-size: 12.5px; color: var(--ink-2); }
-  .fld .note { font-size: 11.5px; color: var(--ink-4); }
+  .fld { display: flex; align-items: center; gap: 10px; min-height: calc(30px * var(--fs)); margin-bottom: 9px; }
+  .fld > label:first-child { flex: 1; font-size: calc(12.5px * var(--fs)); color: var(--ink-2); }
+  .fld .note { font-size: calc(11.5px * var(--fs)); color: var(--ink-4); }
   .sub { margin-left: 26px; }
   input[type="number"], input[type="text"], select {
-    height: 30px; padding: 0 9px; border-radius: 7px; border: 1px solid var(--line);
-    background: var(--page); color: var(--ink); outline: none; font-size: 12.5px;
+    height: calc(30px * var(--fs)); padding: 0 9px; border-radius: 7px; border: 1px solid var(--line);
+    background: var(--page); color: var(--ink); outline: none; font-size: calc(12.5px * var(--fs));
   }
   input[type="number"] { width: 78px; }
   input:focus, select:focus { border-color: var(--accent); }
@@ -427,14 +431,14 @@
   .theme-card { cursor: pointer; border: 1px solid var(--line); border-radius: 9px; padding: 6px;
                 background: var(--page); }
   .theme-card[aria-checked="true"] { border: 2px solid var(--accent); padding: 5px; }
-  .theme-card .name { font-size: 12px; padding: 7px 2px 1px; color: var(--ink-2); }
+  .theme-card .name { font-size: calc(12px * var(--fs)); padding: 7px 2px 1px; color: var(--ink-2); }
   .theme-card[aria-checked="true"] .name { font-weight: 600; color: var(--ink); }
 
   .stat { display: flex; justify-content: space-between; padding: 7px 0;
-          border-bottom: 1px solid var(--line); font-size: 12.5px; }
+          border-bottom: 1px solid var(--line); font-size: calc(12.5px * var(--fs)); }
   .stat:last-child { border-bottom: 0; }
   .stat .v { font-variant-numeric: tabular-nums; color: var(--ink-4); }
-  .keys { display: grid; grid-template-columns: auto 1fr; gap: 7px 16px; font-size: 12.5px;
+  .keys { display: grid; grid-template-columns: auto 1fr; gap: 7px 16px; font-size: calc(12.5px * var(--fs));
           align-items: center; }
   .keys kbd { justify-self: start; }
   .danger-zone { border: 1px solid var(--line); border-radius: 9px; padding: 14px 16px;
@@ -450,23 +454,23 @@
   }
   .modal {
     background: var(--page); border: 1px solid var(--line); border-radius: 12px;
-    padding: 20px 22px; width: 420px; box-shadow: 0 18px 48px rgba(0,0,0,.22);
+    padding: 20px 22px; width: min(calc(420px * var(--fs)), calc(100vw - 40px)); box-shadow: 0 18px 48px rgba(0,0,0,.22);
   }
-  .modal-title { font-size: 14px; font-weight: 600; margin-bottom: 14px; color: var(--ink); }
+  .modal-title { font-size: calc(14px * var(--fs)); font-weight: 600; margin-bottom: 14px; color: var(--ink); }
   .modal-input {
-    width: 100%; height: 34px; padding: 0 11px; border-radius: 7px;
+    width: 100%; height: calc(34px * var(--fs)); padding: 0 11px; border-radius: 7px;
     border: 1px solid var(--line); background: var(--list); color: var(--ink);
-    outline: none; font-size: 13px; margin-bottom: 16px;
+    outline: none; font-size: calc(13px * var(--fs)); margin-bottom: 16px;
   }
   .modal-input:focus { border-color: var(--accent); }
   .modal-row { display: flex; gap: 8px; justify-content: flex-end; }
   .primary.danger { background: var(--bad); }
-  .modal.wide { width: 560px; max-height: calc(100vh - 80px); overflow-y: auto; }
+  .modal.wide { width: min(calc(560px * var(--fs)), calc(100vw - 40px)); max-height: calc(100vh - 40px); overflow-y: auto; }
   .warnicon { color: var(--bad); display: flex; }
   .faint { color: var(--faint); }
   .dim { color: var(--ink-4); }
   .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
-  .empty.nofeeds { padding: 28px 12px; font-size: 12.5px; }
+  .empty.nofeeds { padding: 28px 12px; font-size: calc(12.5px * var(--fs)); }
   .note.about { line-height: 1.65; max-width: 34em; margin: 0 auto; text-align: center; }
   .grow1 { flex: 1; }
   .flabel { flex: 0 0 96px; }
@@ -475,12 +479,12 @@
   .mt5 { margin-top: 5px; }
   .mt18 { margin-top: 18px; }
   .mb14 { margin-bottom: 14px; }
-  .mono11 { word-break: break-all; font-family: var(--mono); font-size: 11px; }
+  .mono11 { word-break: break-all; font-family: var(--mono); font-size: calc(11px * var(--fs)); }
   .aboutbox { text-align: center; padding: 30px 0 20px; }
-  .appname { font-size: 19px; font-weight: 600; }
+  .appname { font-size: calc(19px * var(--fs)); font-weight: 600; }
   .applogo { display: block; margin: 0 auto 14px; border-radius: 12px; }
   .swatchsvg { display: block; border-radius: 6px; }
-  .sheet[data-size="props"] { height: min(600px, calc(100vh - 80px)); width: min(700px, calc(100vw - 80px)); }
+  .sheet[data-size="props"] { height: min(calc(600px * var(--fs)), calc(100vh - 40px)); width: min(calc(700px * var(--fs)), calc(100vw - 40px)); }
 
   /* Update progress: a hairline under the toolbar, so a poll is visible
      without a dialog in the way. */
@@ -508,14 +512,21 @@
   /* Text mode hides the icon only where there is a label to replace it.
      A button with no .tlabel keeps its icon, or it would vanish entirely —
      which is how the app menu disappeared and took Settings with it. */
-  .bar[data-style="text"] > button:has(> .tlabel) > svg { display: none; }
-  .bar[data-style="icontext"] .tlabel,
-  .bar[data-style="text"] .tlabel { display: inline; }
-  .bar[data-style="icontext"] .ibtn,
-  .bar[data-style="text"] .ibtn { width: auto; gap: 7px; padding: 0 10px; font-size: 12.5px; }
-  .bar[data-style="icon"] .primary .tlabel { display: none; }
-  .bar[data-style="icon"] #btn-update { padding: 0 9px; }
-  .bar[hidden] { display: none; }
+  :is(.bar, #readbar)[data-style="text"] > button:has(> .tlabel) > svg { display: none; }
+  :is(.bar, #readbar)[data-style="icontext"] .tlabel,
+  :is(.bar, #readbar)[data-style="text"] .tlabel { display: inline; }
+  :is(.bar, #readbar)[data-style="icontext"] .ibtn,
+  :is(.bar, #readbar)[data-style="text"] .ibtn { width: auto; gap: 7px; padding: 0 10px; font-size: calc(12.5px * var(--fs)); }
+  :is(.bar, #readbar)[data-style="icon"] .primary .tlabel { display: none; }
+  :is(.bar, #readbar)[data-style="icon"] #btn-update { padding: 0 9px; }
+  :is(.bar, #readbar)[hidden] { display: none; }
+  /* Buttons keep their size; the » menu takes what does not fit
+     (fitToolbar). Shrinking them squeezed their labels out of sight. */
+  :is(.bar, #readbar) { min-width: 0; max-width: 100%; overflow: hidden; }
+  :is(.bar, #readbar) > :not(.grow):not(#search) { flex-shrink: 0; }
+  :is(.bar, #readbar) button { white-space: nowrap; }
+  #search { flex-shrink: 1; min-width: calc(150px * var(--fs)); }
+  :is(.bar, #readbar) > .ovf { display: none !important; }
   [data-cmd][hidden] { display: none !important; }
 
   /* ---- drag and drop in the feed tree ---- */
@@ -534,7 +545,7 @@
      a label with no colour set still reads as a chip rather than as white text
      on a white row. */
   .lchip {
-    height: 13px; padding: 0 5px; border-radius: 3px; font-size: 9.5px; font-weight: 600;
+    height: calc(13px * var(--fs)); padding: 0 5px; border-radius: 3px; font-size: calc(9.5px * var(--fs)); font-weight: 600;
     display: flex; align-items: center; color: #fff; letter-spacing: .2px; white-space: nowrap;
     background: var(--ink-4);
   }
@@ -560,12 +571,12 @@
   :root[data-layout="newspaper"] .item .marks { align-items: center; padding-top: 3px; }
   :root[data-layout="newspaper"] .item .body { flex: 1; min-width: 0; }
   :root[data-layout="newspaper"] .item .t {
-    font-family: var(--serif); font-size: 21px; font-weight: 600; line-height: 1.25;
+    font-family: var(--serif); font-size: calc(21px * var(--fs)); font-weight: 600; line-height: 1.25;
     margin-bottom: 7px; white-space: normal; overflow: visible;
   }
   :root[data-layout="newspaper"] .item.read .t { color: var(--ink-3); font-weight: 600; }
   :root[data-layout="newspaper"] .item .ex {
-    font-family: var(--serif); font-size: 14.5px; line-height: 1.55; color: var(--ink-3);
+    font-family: var(--serif); font-size: calc(14.5px * var(--fs)); line-height: 1.55; color: var(--ink-3);
     margin-top: 8px;
   }
   :root[data-layout="newspaper"] .item .full { margin-top: 18px; }
@@ -575,25 +586,25 @@
     display: flex; gap: 8px; align-items: center; margin-top: 14px;
     padding-top: 12px; border-top: 1px solid var(--line);
   }
-  :root[data-layout="newspaper"] .item .cardbar .pill { height: 26px; font-size: 11.5px; }
+  :root[data-layout="newspaper"] .item .cardbar .pill { height: calc(26px * var(--fs)); font-size: calc(11.5px * var(--fs)); }
   /* Compact newspaper is narrower and tighter, not a different shape. */
   :root[data-layout="newspaper"][data-density="compact"] .item { padding: 12px 18px 14px; margin-bottom: 9px; }
-  :root[data-layout="newspaper"][data-density="compact"] .item .t { font-size: 17px; }
-  :root[data-layout="newspaper"][data-density="compact"] .item .ex { font-size: 13px; }
+  :root[data-layout="newspaper"][data-density="compact"] .item .t { font-size: calc(17px * var(--fs)); }
+  :root[data-layout="newspaper"][data-density="compact"] .item .ex { font-size: calc(13px * var(--fs)); }
 
   /* ---- editors for labels, filters and toolbars ---- */
   .erow {
     display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: 8px;
     border: 1px solid var(--line); margin-bottom: 7px; background: var(--page);
   }
-  .erow .en { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
-  .erow .sub2 { font-size: 11.5px; color: var(--ink-4); }
+  .erow .en { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(12.5px * var(--fs)); }
+  .erow .sub2 { font-size: calc(11.5px * var(--fs)); color: var(--ink-4); }
   .erow .mini { width: 24px; height: 24px; border-radius: 6px; display: flex;
                 align-items: center; justify-content: center; color: var(--ink-4); }
   .erow .mini:hover { background: var(--sel); color: var(--ink-2); }
   .erow .mini.danger:hover { color: var(--bad); }
   .erow.off .en { color: var(--ink-4); }
-  .erow .warn { color: var(--bad); font-size: 11.5px; }
+  .erow .warn { color: var(--bad); font-size: calc(11.5px * var(--fs)); }
   .swatch { width: 16px; height: 16px; border-radius: 4px; flex-shrink: 0; border: 1px solid rgba(0,0,0,.15); }
   .colors { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
   .colors button { width: 22px; height: 22px; border-radius: 6px; border: 2px solid transparent; }
@@ -604,7 +615,7 @@
   .tb-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; }
   .tb-item {
     display: flex; align-items: center; gap: 9px; padding: 5px 9px; border-radius: 7px;
-    border: 1px solid var(--line); font-size: 12.5px;
+    border: 1px solid var(--line); font-size: calc(12.5px * var(--fs));
   }
   .tb-item.hiddenitem { opacity: .5; }
   .tb-item .en { flex: 1; }
@@ -686,7 +697,7 @@
       <button class="ibtn" id="btn-listmarkall" data-cmd="markall" title="Mark all read (Shift+M)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M1.8 8.4l2.6 2.6L9.4 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.8 11l1.6 1.6L14 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="tlabel">Mark all read</span></button>
       <div class="grow"></div>
       <span id="selcount"></span>
-      <span id="scopename" style="font-size:11.5px;color:var(--ink-4)"></span>
+      <span id="scopename" style="font-size:calc(11.5px * var(--fs));color:var(--ink-4)"></span>
     </div>
     <div id="listhead"><span style="width:35px"></span><button class="colsort grow" data-sort="title" data-label="TITLE">TITLE</button><button class="colsort" data-sort="date" data-label="DATE">DATE</button></div>
     <div id="list" tabindex="-1"></div>
