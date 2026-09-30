@@ -77,13 +77,13 @@
     display: flex; align-items: center; gap: 3px; padding: 0 8px;
     background: var(--bar); border-bottom: 1px solid var(--line); flex-shrink: 0;
   }
-  #toolbar { height: calc(48px * var(--fs)); gap: 5px; padding: 0 12px; }
-  .panel-bar { height: calc(36px * var(--fs)); }
-  :root[data-density="compact"] #toolbar { height: calc(34px * var(--fs)); }
-  :root[data-density="compact"] .panel-bar { height: calc(26px * var(--fs)); }
+  #toolbar { height: 48px; gap: 5px; padding: 0 12px; }
+  .panel-bar { height: 36px; }
+  :root[data-density="compact"] #toolbar { height: 34px; }
+  :root[data-density="compact"] .panel-bar { height: 26px; }
 
   .ibtn {
-    width: calc(30px * var(--fs)); height: calc(30px * var(--fs)); border-radius: 7px; display: flex;
+    width: 30px; height: 30px; border-radius: 7px; display: flex;
     align-items: center; justify-content: center; color: var(--ink-3); flex-shrink: 0;
   }
   .ibtn:hover { background: var(--sel); }
@@ -93,28 +93,28 @@
      behind them. In CSS, because var() does not resolve inside an SVG fill
      attribute. */
   .knob { fill: var(--bar); }
-  .panel-bar .ibtn { width: calc(26px * var(--fs)); height: calc(26px * var(--fs)); border-radius: 6px; }
+  .panel-bar .ibtn { width: 26px; height: 26px; border-radius: 6px; }
   .sep { width: 1px; height: 18px; background: var(--line); margin: 0 4px; flex-shrink: 0; }
   .grow { flex: 1 1 auto; }
 
   .primary {
-    display: flex; align-items: center; gap: 7px; height: calc(30px * var(--fs)); padding: 0 12px;
+    display: flex; align-items: center; gap: 7px; height: 30px; padding: 0 12px;
     border-radius: 7px; background: var(--accent); color: var(--on-accent);
     font-size: calc(12.5px * var(--fs)); font-weight: 600; flex-shrink: 0;
   }
   .primary:hover { filter: brightness(1.07); }
   .pill {
-    display: flex; align-items: center; gap: 6px; height: calc(28px * var(--fs)); padding: 0 10px;
+    display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px;
     border-radius: 7px; border: 1px solid var(--line); background: var(--page);
     color: var(--ink-2); font-size: calc(12px * var(--fs)); flex-shrink: 0;
   }
   .pill:hover { background: var(--sel); }
   .seg { display: flex; padding: 2px; border-radius: 8px; background: var(--sel); border: 1px solid var(--line); flex-shrink: 0; }
-  .seg button { height: calc(24px * var(--fs)); padding: 0 11px; border-radius: 6px; color: var(--ink-4); font-size: calc(12px * var(--fs)); }
+  .seg button { height: 24px; padding: 0 11px; border-radius: 6px; color: var(--ink-4); font-size: calc(12px * var(--fs)); }
   .seg button[aria-pressed="true"] { background: var(--page); color: var(--ink); font-weight: 500; }
 
   #search {
-    display: flex; align-items: center; gap: 8px; width: 230px; height: calc(30px * var(--fs));
+    display: flex; align-items: center; gap: 8px; width: 230px; height: 30px;
     padding: 0 11px; border-radius: 8px; background: var(--page); border: 1px solid var(--line);
   }
   #search input { flex: 1; min-width: 0; border: 0; background: none; outline: none; color: var(--ink); font-size: calc(12.5px * var(--fs)); }
@@ -149,7 +149,7 @@
      scroll, so a long subscription list never pushes them off screen. */
   #cats { flex-shrink: 0; border-top: 1px solid var(--line); background: var(--sidebar); display: flex; flex-direction: column; }
   #cats-head {
-    display: flex; align-items: center; gap: 6px; height: calc(26px * var(--fs)); padding: 0 10px;
+    display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px;
     width: 100%; text-align: left; flex-shrink: 0;
     font-size: calc(10px * var(--fs)); font-weight: 600; letter-spacing: 1.1px; color: var(--ink-4);
   }
@@ -160,14 +160,14 @@
   #cats-head[aria-expanded="false"] + #catlist { display: none; }
   #cats:has(#cats-head[aria-expanded="false"]) { flex: 0 0 auto; }
   .node {
-    display: flex; align-items: center; gap: 8px; width: 100%; height: calc(27px * var(--fs));
+    display: flex; align-items: center; gap: 8px; width: 100%; height: 27px;
     padding: 0 8px; border-radius: 6px; text-align: left; color: var(--ink-2); font-size: calc(12.5px * var(--fs));
     cursor: default; user-select: none; box-sizing: border-box;
   }
   .node:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   /* Chromium needs this to drag a non-anchor element that contains text. */
   .node[draggable="true"] { -webkit-user-drag: element; }
-  :root[data-density="compact"] .node { height: calc(20px * var(--fs)); font-size: calc(11.5px * var(--fs)); }
+  :root[data-density="compact"] .node { height: 20px; font-size: calc(11.5px * var(--fs)); }
   .node:hover { background: var(--sel); }
   .node[aria-current="true"] { background: var(--sel-soft); font-weight: 600; color: var(--ink); }
   .node .label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -199,13 +199,13 @@
   .rule { height: 1px; background: var(--line); margin: 8px 6px; }
 
   #listhead {
-    height: calc(30px * var(--fs)); display: flex; align-items: center; gap: 10px; padding: 0 10px 0 14px;
+    height: 30px; display: flex; align-items: center; gap: 10px; padding: 0 10px 0 14px;
     background: var(--sidebar); border-bottom: 1px solid var(--line); flex-shrink: 0;
     font-size: calc(10px * var(--fs)); font-weight: 600; letter-spacing: .9px; color: var(--ink-4);
   }
-  :root[data-density="compact"] #listhead { height: calc(22px * var(--fs)); }
+  :root[data-density="compact"] #listhead { height: 22px; }
   #listhead .colsort { font: inherit; letter-spacing: inherit; color: inherit; text-align: left;
-                       padding: 3px 4px; border-radius: 4px; }
+                       padding: 1px 4px; line-height: 1.2; border-radius: 4px; }
   #listhead .colsort:hover { color: var(--ink-2); background: var(--sel-soft); }
   #listhead .colsort[aria-sort="ascending"], #listhead .colsort[aria-sort="descending"] { color: var(--ink-2); }
   .choices { display: flex; flex-direction: column; gap: 4px; margin: 4px 0 12px; max-height: 50vh; overflow-y: auto; }
@@ -217,7 +217,7 @@
   .choice .c2 { font-size: calc(11px * var(--fs)); color: var(--ink-4); font-family: var(--mono); word-break: break-all; }
   .keyedit { display: grid; grid-template-columns: 1fr auto 26px; gap: 4px 10px; align-items: center;
              padding: 2px 8px 6px; font-size: calc(12.5px * var(--fs)); color: var(--ink-2); }
-  .keybtn { min-width: 92px; height: calc(26px * var(--fs)); padding: 0 8px; border-radius: 6px; border: 1px solid var(--line);
+  .keybtn { min-width: 92px; height: 26px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--line);
             background: var(--page); text-align: center; }
   .keybtn:hover, .keybtn[aria-pressed="true"] { border-color: var(--accent); }
   .textsize { min-width: 44px; text-align: center; font-variant-numeric: tabular-nums; font-size: calc(12.5px * var(--fs)); color: var(--ink-2); }
@@ -228,7 +228,7 @@
   #list:focus { outline: none; }
   .group { padding: 9px 14px 5px; font-size: calc(10px * var(--fs)); font-weight: 600; letter-spacing: 1px; color: var(--ink-4); }
   :root[data-density="compact"] .group {
-    padding: 0 14px; height: calc(19px * var(--fs)); display: flex; align-items: center;
+    padding: 0 14px; height: 19px; display: flex; align-items: center;
     background: var(--sidebar); border-bottom: 1px solid var(--line); font-size: calc(9.5px * var(--fs));
   }
 
@@ -264,14 +264,14 @@
   .item { user-select: none; }
 
   #selcount {
-    display: none; align-items: center; height: calc(20px * var(--fs)); padding: 0 8px;
+    display: none; align-items: center; height: 20px; padding: 0 8px;
     border-radius: 10px; background: var(--accent); color: var(--on-accent);
     font-size: calc(11px * var(--fs)); font-weight: 600; flex-shrink: 0;
   }
   #selcount.show { display: flex; }
 
   :root[data-density="compact"] .item {
-    height: calc(var(--row) * var(--fs)); align-items: center; padding: 0 10px 0 6px;
+    height: var(--row); align-items: center; padding: 0 10px 0 6px;
     border-bottom: 1px solid var(--line); gap: 8px;
   }
   :root[data-density="compact"] .item .marks { align-items: center; padding-top: 0; gap: 3px; }
@@ -285,10 +285,10 @@
 
   .chip { white-space: nowrap; padding: 1px 6px; border-radius: 4px; font-size: calc(10px * var(--fs)); font-weight: 600; background: var(--sel); color: var(--ink-3); }
 
-  #readbar { height: calc(44px * var(--fs)); border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 4px; padding: 0 14px; flex-shrink: 0; }
-  :root[data-density="compact"] #readbar { height: calc(30px * var(--fs)); }
+  #readbar { height: 44px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 4px; padding: 0 14px; flex-shrink: 0; }
+  :root[data-density="compact"] #readbar { height: 30px; }
   #openext {
-    display: flex; align-items: center; gap: 7px; height: calc(30px * var(--fs)); padding: 0 10px 0 12px;
+    display: flex; align-items: center; gap: 7px; height: 30px; padding: 0 10px 0 12px;
     border-radius: 7px; border: 1px solid var(--line); background: var(--bar);
     color: var(--ink); font-size: calc(12.5px * var(--fs)); font-weight: 500;
   }
@@ -329,7 +329,7 @@
   .prose a { color: var(--accent); }
 
   #status {
-    height: calc(26px * var(--fs)); flex-shrink: 0; display: flex; align-items: center; gap: 14px;
+    height: 26px; flex-shrink: 0; display: flex; align-items: center; gap: 14px;
     padding: 0 14px; background: var(--chrome); border-top: 1px solid var(--chrome-line);
     font-size: calc(11px * var(--fs)); color: var(--ink-3);
   }
@@ -353,12 +353,12 @@
   }
 
   .ctx {
-    position: fixed; z-index: 60; min-width: calc(196px * var(--fs)); padding: 5px;
+    position: fixed; z-index: 60; min-width: 196px; padding: 5px;
     background: var(--page); border: 1px solid var(--line); border-radius: 9px;
     box-shadow: 0 12px 34px rgba(0,0,0,.20); font-size: calc(12.5px * var(--fs));
   }
   .ctx button {
-    display: flex; align-items: center; gap: 9px; width: 100%; height: calc(28px * var(--fs));
+    display: flex; align-items: center; gap: 9px; width: 100%; height: 28px;
     padding: 0 10px; border-radius: 6px; text-align: left; color: var(--ink-2);
   }
   .ctx button:hover { background: var(--sel); color: var(--ink); }
@@ -380,41 +380,41 @@
     align-items: center; justify-content: center; z-index: 55; }
   .sheet {
     background: var(--page); border: 1px solid var(--line); border-radius: 12px;
-    width: min(calc(880px * var(--fs)), calc(100vw - 40px)); height: min(calc(640px * var(--fs)), calc(100vh - 40px));
+    width: min(880px, calc(100vw - 80px)); height: min(640px, calc(100vh - 80px));
     display: flex; flex-direction: column; overflow: hidden;
     box-shadow: 0 24px 60px rgba(0,0,0,.28);
   }
   .sheet-top {
-    height: calc(50px * var(--fs)); flex-shrink: 0; display: flex; align-items: center;
+    height: 50px; flex-shrink: 0; display: flex; align-items: center;
     padding: 0 10px 0 20px; background: var(--chrome); border-bottom: 1px solid var(--chrome-line);
     font-size: calc(14px * var(--fs)); font-weight: 600;
   }
-  .sheet-body { flex: 1; display: grid; grid-template-columns: calc(186px * var(--fs)) 1fr; min-height: 0; }
+  .sheet-body { flex: 1; display: grid; grid-template-columns: 186px 1fr; min-height: 0; }
   .sheet-nav {
     background: var(--sidebar); border-right: 1px solid var(--line);
     padding: 10px 8px; display: flex; flex-direction: column; gap: 1px; overflow-y: auto;
   }
   .sheet-nav button {
-    display: flex; align-items: center; height: calc(30px * var(--fs)); padding: 0 11px; border-radius: 7px;
-    width: 100%; text-align: left; font-size: calc(12.5px * var(--fs)); color: var(--ink-3); white-space: nowrap;
+    display: flex; align-items: center; min-height: 30px; padding: 4px 11px; border-radius: 7px;
+    width: 100%; text-align: left; font-size: calc(12.5px * var(--fs)); color: var(--ink-3);
   }
   .sheet-nav button:hover { background: var(--sel); }
   .sheet-nav button[aria-current="true"] { background: var(--sel); color: var(--ink); font-weight: 600; }
   .sheet-page { padding: 22px 26px; overflow-y: auto; }
   .sheet-foot {
-    height: calc(56px * var(--fs)); flex-shrink: 0; display: flex; align-items: center; gap: 9px;
+    height: 56px; flex-shrink: 0; display: flex; align-items: center; gap: 9px;
     padding: 0 20px; background: var(--chrome); border-top: 1px solid var(--chrome-line);
   }
 
   .grp { font-size: calc(10px * var(--fs)); font-weight: 600; letter-spacing: 1px; color: var(--ink-4);
          margin: 0 0 11px; }
   .grp:not(:first-child) { margin-top: 26px; }
-  .fld { display: flex; align-items: center; gap: 10px; min-height: calc(30px * var(--fs)); margin-bottom: 9px; }
+  .fld { display: flex; align-items: center; gap: 10px; min-height: 30px; margin-bottom: 9px; }
   .fld > label:first-child { flex: 1; font-size: calc(12.5px * var(--fs)); color: var(--ink-2); }
   .fld .note { font-size: calc(11.5px * var(--fs)); color: var(--ink-4); }
   .sub { margin-left: 26px; }
   input[type="number"], input[type="text"], select {
-    height: calc(30px * var(--fs)); padding: 0 9px; border-radius: 7px; border: 1px solid var(--line);
+    height: 30px; padding: 0 9px; border-radius: 7px; border: 1px solid var(--line);
     background: var(--page); color: var(--ink); outline: none; font-size: calc(12.5px * var(--fs));
   }
   input[type="number"] { width: 78px; }
@@ -454,18 +454,18 @@
   }
   .modal {
     background: var(--page); border: 1px solid var(--line); border-radius: 12px;
-    padding: 20px 22px; width: min(calc(420px * var(--fs)), calc(100vw - 40px)); box-shadow: 0 18px 48px rgba(0,0,0,.22);
+    padding: 20px 22px; width: 420px; box-shadow: 0 18px 48px rgba(0,0,0,.22);
   }
   .modal-title { font-size: calc(14px * var(--fs)); font-weight: 600; margin-bottom: 14px; color: var(--ink); }
   .modal-input {
-    width: 100%; height: calc(34px * var(--fs)); padding: 0 11px; border-radius: 7px;
+    width: 100%; height: 34px; padding: 0 11px; border-radius: 7px;
     border: 1px solid var(--line); background: var(--list); color: var(--ink);
     outline: none; font-size: calc(13px * var(--fs)); margin-bottom: 16px;
   }
   .modal-input:focus { border-color: var(--accent); }
   .modal-row { display: flex; gap: 8px; justify-content: flex-end; }
   .primary.danger { background: var(--bad); }
-  .modal.wide { width: min(calc(560px * var(--fs)), calc(100vw - 40px)); max-height: calc(100vh - 40px); overflow-y: auto; }
+  .modal.wide { width: 560px; max-height: calc(100vh - 80px); overflow-y: auto; }
   .warnicon { color: var(--bad); display: flex; }
   .faint { color: var(--faint); }
   .dim { color: var(--ink-4); }
@@ -484,7 +484,7 @@
   .appname { font-size: calc(19px * var(--fs)); font-weight: 600; }
   .applogo { display: block; margin: 0 auto 14px; border-radius: 12px; }
   .swatchsvg { display: block; border-radius: 6px; }
-  .sheet[data-size="props"] { height: min(calc(600px * var(--fs)), calc(100vh - 40px)); width: min(calc(700px * var(--fs)), calc(100vw - 40px)); }
+  .sheet[data-size="props"] { height: min(600px, calc(100vh - 80px)); width: min(700px, calc(100vw - 80px)); }
 
   /* Update progress: a hairline under the toolbar, so a poll is visible
      without a dialog in the way. */
@@ -525,7 +525,7 @@
   :is(.bar, #readbar) { min-width: 0; max-width: 100%; overflow: hidden; }
   :is(.bar, #readbar) > :not(.grow):not(#search) { flex-shrink: 0; }
   :is(.bar, #readbar) button { white-space: nowrap; }
-  #search { flex-shrink: 1; min-width: calc(150px * var(--fs)); }
+  #search { flex-shrink: 1; min-width: 150px; }
   :is(.bar, #readbar) > .ovf { display: none !important; }
   [data-cmd][hidden] { display: none !important; }
 
@@ -545,7 +545,7 @@
      a label with no colour set still reads as a chip rather than as white text
      on a white row. */
   .lchip {
-    height: calc(13px * var(--fs)); padding: 0 5px; border-radius: 3px; font-size: calc(9.5px * var(--fs)); font-weight: 600;
+    height: 13px; padding: 0 5px; border-radius: 3px; font-size: calc(9.5px * var(--fs)); font-weight: 600;
     display: flex; align-items: center; color: #fff; letter-spacing: .2px; white-space: nowrap;
     background: var(--ink-4);
   }
@@ -586,7 +586,7 @@
     display: flex; gap: 8px; align-items: center; margin-top: 14px;
     padding-top: 12px; border-top: 1px solid var(--line);
   }
-  :root[data-layout="newspaper"] .item .cardbar .pill { height: calc(26px * var(--fs)); font-size: calc(11.5px * var(--fs)); }
+  :root[data-layout="newspaper"] .item .cardbar .pill { height: 26px; font-size: calc(11.5px * var(--fs)); }
   /* Compact newspaper is narrower and tighter, not a different shape. */
   :root[data-layout="newspaper"][data-density="compact"] .item { padding: 12px 18px 14px; margin-bottom: 9px; }
   :root[data-layout="newspaper"][data-density="compact"] .item .t { font-size: calc(17px * var(--fs)); }
