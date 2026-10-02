@@ -1547,16 +1547,21 @@ async function deleteArticles(ids) {
 }
 
 $("#btn-listmarkall").onclick = async () => {
-  if (!state.scope) return toast("Select a feed first");
+  // On the feeds toolbar the button is about the feeds: every one of them.
+  // Above the article list, and from the keyboard, it is about that list.
+  // It is one button copied onto each bar, so it used to mark only the
+  // selected feed wherever it was pressed.
+  const everything = !!toolbarAnchor?.closest?.("#feedsbar");
+  if (!everything && !state.scope) return toast("Select a feed first");
   // The backend returns every id it marked, including ones beyond the 500
   // the list loads, so undo puts all of them back.
-  const wasUnread = await invoke("mark_scope_read", { scope: state.scope });
+  const wasUnread = await invoke("mark_scope_read", { scope: everything ? "all" : state.scope });
   const unread = wasUnread.length;
-  if (!unread) return toast("Nothing unread here");
+  if (!unread) return toast(everything ? "Nothing unread" : "Nothing unread here");
   pushUndo(`mark ${unread} read`,
            () => invoke("set_read", { ids: wasUnread, read: false }));
   await loadList(); await loadTree(); await refreshStatus();
-  toast(`Marked ${unread} as read`);
+  toast(everything ? `Marked ${unread} as read in all feeds` : `Marked ${unread} as read`);
 };
 
 $("#btn-prev").onclick = () => step(-1);
@@ -3595,6 +3600,15 @@ function seedToolbarClones() {
       clone.removeAttribute("id");
       delete clone.dataset.home;
       clone.hidden = true;
+      if (cmd === "markall" && key === "feeds") {
+        // Says what it does here, and has no shortcut of its own: Shift+M
+        // is the article list's.
+        clone.title = "Mark all feeds read";
+        clone.dataset.tip = "Mark all feeds read";
+        delete clone.dataset.keyaction;
+        const label = clone.querySelector(".tlabel");
+        if (label) label.textContent = "Mark all feeds read";
+      }
       // Segmented controls carry their own listeners; forward from the clone.
       clone.addEventListener("click", (e) => {
         // `button[...]` matters: <html> carries data-layout and data-density,

@@ -2797,6 +2797,33 @@ console.log("\ntoolbar overflow");
   delete bar.clientWidth; delete bar.scrollWidth;
 }
 
+console.log("\nmark all read on the feeds toolbar");
+{
+  closeSheetIfOpen();
+  const marks = (from) => calls.slice(from).filter(([c]) => c === "mark_scope_read").map(([, a]) => a.scope);
+  await window.eval('selectScope("feed:2", "Kernel Notes")');
+  const onFeeds = doc.querySelector('#feedsbar [data-cmd="markall"]');
+  ok(onFeeds && onFeeds.title === "Mark all feeds read", `the feeds toolbar's button says what it does (${onFeeds && onFeeds.title})`);
+  let n = calls.length;
+  onFeeds.click();
+  await tick(60);
+  ok(JSON.stringify(marks(n)) === '["all"]', `there it marks every feed, not just the selected one (${marks(n)})`);
+  n = calls.length;
+  $("#btn-listmarkall").click();
+  await tick(60);
+  ok(JSON.stringify(marks(n)) === '["feed:2"]', `above the article list it marks that list (${marks(n)})`);
+  n = calls.length;
+  doc.body.dispatchEvent(new window.KeyboardEvent("keydown", { key: "M", shiftKey: true, bubbles: true, cancelable: true }));
+  await tick(60);
+  ok(JSON.stringify(marks(n)) === '["feed:2"]', "and so does Shift+M");
+  // With no feed selected the feeds button still works.
+  await window.eval("clearScope()");
+  n = calls.length;
+  onFeeds.click();
+  await tick(60);
+  ok(JSON.stringify(marks(n)) === '["all"]', "it works with no feed selected");
+}
+
 console.log("\nno uncaught errors");
 ok(consoleErrors.length === 0, `console clean${consoleErrors.length ? ": " + consoleErrors.join(" | ") : ""}`);
 
