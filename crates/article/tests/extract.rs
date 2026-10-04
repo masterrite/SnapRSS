@@ -442,3 +442,19 @@ fn data_url_and_a_transparency_png_are_a_lazy_image() {
     );
     assert!(out.contains(r#"src="https://img.test/real.jpg""#), "{out}");
 }
+
+#[test]
+fn the_feeds_own_text_wins_when_it_has_the_words_and_more_pictures() {
+    use snaprss_article::feed_is_fuller;
+    let words = "一段正文。".repeat(200);
+    let feed = format!(r#"<p>{words}</p><img src="https://i.test/1.jpg"><img src="https://i.test/2.jpg">"#);
+    // The page drew its pictures with script: same words, no pictures.
+    assert!(feed_is_fuller(&feed, &format!("<p>{words}</p><p>作者：某某</p>")));
+    // The page has every picture too: the extracted article stands.
+    assert!(!feed_is_fuller(&feed, &format!(r#"<p>{words}</p><img src="a"><img src="b">"#)));
+    // A teaser with pictures against a full article without: the article.
+    let teaser = r#"<p>Short teaser.</p><img src="https://i.test/1.jpg"><img src="https://i.test/2.jpg">"#;
+    assert!(!feed_is_fuller(teaser, &format!("<p>{}</p>", "word ".repeat(400))));
+    // A comic: pictures and no words on either side.
+    assert!(feed_is_fuller(r#"<img src="a"><img src="b">"#, "<p></p>"));
+}

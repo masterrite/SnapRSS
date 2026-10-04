@@ -438,7 +438,10 @@ pub async fn article(
             row.content.as_deref().or(row.description.as_deref()).unwrap_or(""),
             base.as_deref(),
         );
-        let html = snaprss_article::keep_lead_image(&cached, &summary);
+        // The feed's own text, when it is the whole article with more of its
+        // pictures than the page gave up. Decided here rather than when the
+        // page is cached, so articles cached earlier are put right too.
+        let html = cached_or_feed(&cached, summary);
         let minutes = read_minutes_of(&html);
         return Ok(ArticleView {
             id,
@@ -507,6 +510,17 @@ pub async fn article(
         from_feed: true,
         pending: true,
     })
+}
+
+/// What to show for an article whose page has been extracted and cached:
+/// the extracted article with the feed's lead picture, or the feed's own
+/// text (`summary`, already sanitised) when that is the fuller of the two.
+fn cached_or_feed(cached: &str, summary: String) -> String {
+    if snaprss_article::feed_is_fuller(&summary, cached) {
+        summary
+    } else {
+        snaprss_article::keep_lead_image(cached, &summary)
+    }
 }
 
 /// Fetch and extract one article, cache it, and tell the frontend.
@@ -2324,6 +2338,31 @@ mod tests {
             let fr = news_list(st(), "all".into(), None, None, None, Some("élan vital".into()), None).await.unwrap();
             assert_eq!(fr.len(), 1, "accented Latin");
         });
+    }
+
+    #[test]
+    fn a_feed_that_carries_the_whole_article_keeps_its_pictures() {
+        let words = "word ".repeat(300);
+        let feed = snaprss_article::sanitise_feed_html(
+            &format!(
+                r#"<p>{words}</p><img src="https://img.test/1.jpg"><p>{words}</p><img src="https://img.test/2.jpg"><img src="https://img.test/3.jpg">"#
+            ),
+            Some("https://a.test/post"),
+        );
+        // What extraction gave for a site that draws its pictures with
+        // script: the same words, no pictures.
+        let cached = format!("<p>{words}</p><p>{words}</p>");
+        let shown = cached_or_feed(&cached, feed);
+        assert_eq!(shown.matches("<img").count(), 3, "all three, not just the first");
+
+        // A teaser with pictures, and a page with far more text: the page
+        // is shown, with the feed's lead picture restored.
+        let teaser = snaprss_article::sanitise_feed_html(
+            r#"<p>Short teaser.</p><img src="https://img.test/1.jpg"><img src="https://img.test/2.jpg">"#,
+            Some("https://a.test/post"),
+        );
+        let shown = cached_or_feed(&cached, teaser);
+        assert!(shown.contains("word word") && shown.matches("<img").count() == 1);
     }
 
     #[test]

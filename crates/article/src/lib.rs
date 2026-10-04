@@ -499,6 +499,21 @@ pub fn keep_lead_image(extracted: &str, summary: &str) -> String {
     )
 }
 
+/// Whether the feed's own text is the better thing to show than the article
+/// extracted from the page: it has about as much text, and more pictures.
+///
+/// Many feeds carry the whole article. Some of their sites draw the pictures
+/// with script after the page loads, so the fetched page has the words and
+/// none of the pictures, and replacing the feed's text with it took every
+/// picture away but the first, which `keep_lead_image` put back.
+pub fn feed_is_fuller(feed: &str, extracted: &str) -> bool {
+    let images = |html: &str| Document::from(html).select("img[src]").length();
+    let letters = |html: &str| to_plain_text(html).chars().filter(|c| !c.is_whitespace()).count();
+    // "About as much": the page often adds a caption or a byline the feed
+    // leaves out, so a little less still counts as the whole article.
+    images(feed) > images(extracted) && letters(feed) * 10 >= letters(extracted) * 8
+}
+
 /// Elements after which running two pieces of text together would be wrong.
 const BLOCK_TAGS: &[&str] = &[
     "p",
